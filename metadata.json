@@ -1,0 +1,6 @@
+{
+  "name": "CBT MTs Nurul Hijrah",
+  "description": "Sistem Ujian Online CBT Real-Time, Live Proctoring WebRTC, Smart AI Import Soal, dan Analitik Nilai MTs Nurul Hijrah.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
