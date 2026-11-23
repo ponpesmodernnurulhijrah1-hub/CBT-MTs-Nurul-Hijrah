@@ -1,3 +1,13 @@
+export type BrowserKind =
+  | 'chrome'
+  | 'edge'
+  | 'safari-ios'
+  | 'safari-mac'
+  | 'samsung'
+  | 'firefox'
+  | 'webview'
+  | 'other';
+
 export interface InstallContextInput {
   userAgent?: string;
   maxTouchPoints?: number;
@@ -14,6 +24,7 @@ export interface InstallContext {
   isInAppBrowser: boolean;
   isEmbeddedIframe: boolean;
   isSecureContext: boolean;
+  browserKind: BrowserKind;
 }
 
 export type InstallAvailabilityMode =
@@ -32,6 +43,25 @@ export interface InstallAvailabilityInput {
 const IN_APP_BROWSER_RE =
   /whatsapp|instagram|fban|fbav|fb_iab|line\/|tiktok|musical_ly|micromessenger|gsa\/|; wv\)/i;
 
+export function detectBrowserKind(
+  userAgent: string,
+  isIOS: boolean,
+  isInAppBrowser: boolean
+): BrowserKind {
+  const ua = (userAgent || '').toLowerCase();
+  if (isInAppBrowser) return 'webview';
+  if (/samsungbrowser\//.test(ua)) return 'samsung';
+  if (/edg\/|edga\/|edgios\//.test(ua)) return 'edge';
+  if (/firefox\/|fxios\//.test(ua)) return 'firefox';
+  if (isIOS) {
+    if (/crios\//.test(ua)) return 'chrome';
+    return 'safari-ios';
+  }
+  if (/chrome\/|chromium\//.test(ua) && !/opr\/|opera/.test(ua)) return 'chrome';
+  if (/safari\//.test(ua) && !/chrome\/|chromium\//.test(ua)) return 'safari-mac';
+  return 'other';
+}
+
 /**
  * Detects runtime browser & OS capabilities affecting PWA installation and shortcut creation.
  */
@@ -44,6 +74,7 @@ export function detectInstallContext(input: InstallContextInput): InstallContext
   const isIOS = /iphone|ipad|ipod/.test(ua) || isIPadDesktopMode;
   const isAndroid = ua.includes('android');
   const isInAppBrowser = IN_APP_BROWSER_RE.test(ua);
+  const browserKind = detectBrowserKind(ua, isIOS, isInAppBrowser);
 
   return {
     isStandalone,
@@ -52,6 +83,7 @@ export function detectInstallContext(input: InstallContextInput): InstallContext
     isInAppBrowser,
     isEmbeddedIframe: Boolean(input.isInIframe),
     isSecureContext: input.isSecureContext ?? true,
+    browserKind,
   };
 }
 

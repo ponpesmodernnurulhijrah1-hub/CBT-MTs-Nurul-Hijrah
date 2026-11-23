@@ -37,6 +37,8 @@ export const QRInstallModal: React.FC<QRInstallModalProps> = ({
     isEmbeddedIframe,
     isInAppBrowser,
     isSecureContext,
+    browserKind,
+    lastOutcome,
     swActive,
     manifestReady,
     availabilityMode,
@@ -89,7 +91,7 @@ export const QRInstallModal: React.FC<QRInstallModalProps> = ({
         <div className="flex items-start justify-between gap-4">
           <div>
             <h2 id="qr-install-title" className="font-display text-lg font-bold text-slate-900">
-              Install Aplikasi &amp; Buat Pintasan
+              Instal Aplikasi &amp; Buat Pintasan
             </h2>
             <p className="mt-1 text-xs text-slate-600">
               Pasang di HP, tablet, atau komputer agar terbuka layar penuh dan selalu sinkron real-time.
@@ -163,12 +165,12 @@ export const QRInstallModal: React.FC<QRInstallModalProps> = ({
           ) : isInstallable || availabilityMode === 'native_prompt' ? (
             <button
               type="button"
-              onClick={install}
+              onClick={() => void install()}
               data-testid="modal-direct-install-btn"
-              className="btn-press min-h-[44px] flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-800"
+              className="btn-press min-h-[44px] flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-700 px-4 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-emerald-800"
             >
               <Download className="h-4 w-4" />
-              <span>Install Aplikasi Sekarang</span>
+              <span>Instal Aplikasi Sekarang</span>
             </button>
           ) : availabilityMode === 'open_in_browser' ? (
             <div className="rounded-2xl border border-amber-300/70 bg-amber-50/90 p-3.5 text-xs text-slate-800 space-y-2.5">
@@ -176,9 +178,9 @@ export const QRInstallModal: React.FC<QRInstallModalProps> = ({
                 <AlertTriangle className="h-4 w-4 shrink-0 text-amber-700 mt-0.5" />
                 <span>
                   {isEmbeddedIframe
-                    ? 'Tampilan sedang dibuka di dalam frame pratinjau. Browser menonaktifkan pemasangan pintasan dari dalam iframe.'
+                    ? 'Tampilan sedang dibuka di dalam frame pratinjau. Browser menonaktifkan prompt instalasi PWA dari dalam iframe.'
                     : isInAppBrowser
-                      ? 'Tautan dibuka lewat browser bawaan aplikasi (WhatsApp/IG). Buka di Chrome atau Safari agar bisa diinstall.'
+                      ? 'Tautan dibuka lewat browser bawaan aplikasi (WhatsApp/IG). Buka di Chrome atau Safari agar fitur instal aplikasi aktif.'
                       : 'Buka tautan di jendela browser utama untuk memasang aplikasi.'}
                 </span>
               </div>
@@ -205,26 +207,53 @@ export const QRInstallModal: React.FC<QRInstallModalProps> = ({
               </div>
             </div>
           ) : (
-            <div className="glass-subtle rounded-2xl p-3.5 text-xs text-slate-700 space-y-2">
+            <div className="glass-subtle rounded-2xl p-3.5 text-xs text-slate-700 space-y-2.5">
+              {lastOutcome === 'dismissed' && (
+                <div className="rounded-xl border border-amber-300/80 bg-amber-50/90 px-3 py-2 text-[11px] font-medium text-amber-950">
+                  Prompt instalasi browser ditutup. Sesuai kebijakan browser, dialog otomatis baru dapat muncul lagi melalui ikon instal di bilah alamat atau menu di bawah.
+                </div>
+              )}
               <div className="flex items-center gap-2 font-semibold text-slate-900">
                 <Smartphone className="h-4 w-4 text-emerald-700" />
                 <span>
                   {isIOS
-                    ? 'Panduan Install di iPhone / iPad (Safari):'
-                    : 'Panduan Install / Buat Pintasan di Browser:'}
+                    ? 'Panduan Instal di iPhone / iPad (Safari):'
+                    : browserKind === 'edge'
+                      ? 'Panduan Instal di Microsoft Edge:'
+                      : browserKind === 'firefox'
+                        ? 'Panduan Instal di Mozilla Firefox:'
+                        : browserKind === 'samsung'
+                          ? 'Panduan Instal di Samsung Internet:'
+                          : 'Panduan Instal Aplikasi di Chrome / Browser:'}
                 </span>
               </div>
               {isIOS ? (
                 <ol className="list-decimal pl-5 space-y-1 text-slate-600">
-                  <li>Pastikan tautan dibuka di browser <strong>Safari</strong>.</li>
-                  <li>Ketuk tombol <strong>Bagikan (Share)</strong> di bilah bawah.</li>
-                  <li>Pilih <strong>Tambahkan ke Layar Utama (Add to Home Screen)</strong>.</li>
+                  <li>Pastikan tautan dibuka langsung di browser <strong>Safari</strong> (iOS tidak menyediakan tombol prompt otomatis).</li>
+                  <li>Ketuk tombol <strong>Bagikan (Share)</strong> di bilah navigasi.</li>
+                  <li>Pilih <strong>Tambahkan ke Layar Utama (Add to Home Screen)</strong> lalu ketuk <strong>Tambah</strong>.</li>
+                </ol>
+              ) : browserKind === 'edge' ? (
+                <ol className="list-decimal pl-5 space-y-1 text-slate-600">
+                  <li>Klik ikon <strong>App available (+)</strong> di ujung kanan bilah alamat Edge, atau buka menu <strong>⋯</strong>.</li>
+                  <li>Pilih <strong>Apps &rarr; Install this site as an app</strong> (atau <strong>Tambahkan ke telepon</strong> di HP).</li>
+                  <li>Konfirmasi <strong>Install</strong> agar terbuka dalam jendela aplikasi mandiri.</li>
+                </ol>
+              ) : browserKind === 'firefox' ? (
+                <ol className="list-decimal pl-5 space-y-1 text-slate-600">
+                  <li>Di <strong>Firefox Android</strong>, ketuk menu titik tiga (<strong>⋮</strong>) di bilah alamat.</li>
+                  <li>Pilih <strong>Pasang / Install</strong> (atau buka di Chrome jika memakai Firefox Desktop agar mendukung mode aplikasi PWA penuh).</li>
+                </ol>
+              ) : browserKind === 'samsung' ? (
+                <ol className="list-decimal pl-5 space-y-1 text-slate-600">
+                  <li>Ketuk ikon unduh panah ke bawah pada bilah alamat, atau ketuk menu garis tiga (<strong>≡</strong>).</li>
+                  <li>Pilih <strong>Tambahkan halaman ke &rarr; Layar depan</strong> untuk memasang aplikasi.</li>
                 </ol>
               ) : (
                 <ol className="list-decimal pl-5 space-y-1 text-slate-600">
-                  <li>Pastikan halaman dibuka di tab utama <strong>Chrome / Edge</strong> (bukan di dalam WhatsApp/pratinjau).</li>
-                  <li>Ketuk ikon menu titik tiga (⋮) di pojok kanan atas browser.</li>
-                  <li>Pilih <strong>Tambahkan ke Layar Utama</strong> lalu pilih <strong>Instal</strong> atau <strong>Buat Pintasan</strong>.</li>
+                  <li>Di <strong>Chrome Desktop</strong>, klik ikon <strong>Instal CBT MTs Nurul Hijrah</strong> di ujung kanan bilah alamat (omnibox).</li>
+                  <li>Di <strong>Chrome Android</strong>, ketuk menu titik tiga (<strong>⋮</strong>) di pojok kanan atas.</li>
+                  <li>Pilih <strong>Tambahkan ke Layar Utama &rarr; Instal Aplikasi</strong> agar berjalan layar penuh.</li>
                 </ol>
               )}
               <div className="flex flex-wrap gap-2 pt-1">

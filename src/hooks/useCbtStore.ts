@@ -4,6 +4,7 @@ import {
   deleteDoc,
   doc,
   getDocFromServer,
+  getDocsFromServer,
   limit,
   onSnapshot,
   orderBy,
@@ -13,6 +14,14 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import { db } from '../config/firebase';
+import {
+  type ConnectionPhase,
+  DEFAULT_CONNECTION_TIMEOUT_MS,
+  MAX_AUTO_RETRY_ATTEMPTS,
+  computeRetryDelayMs,
+  fetchWithTimeout,
+  withTimeout,
+} from '../utils/connectionUtils';
 import { APP_BUILD_HASH, APP_SCHEMA_VERSION, APP_VERSION } from '../config/version';
 import type {
   AdminAccount,
@@ -456,15 +465,21 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
   const [cloudConnected, setCloudConnected] = useState<boolean>(
     typeof navigator !== 'undefined' ? navigator.onLine : true
   );
+  const [connectionPhase, setConnectionPhase] = useState<ConnectionPhase>(() =>
+    typeof navigator !== 'undefined' && !navigator.onLine ? 'offline' : 'connecting'
+  );
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [retryAttempt, setRetryAttempt] = useState(0);
+  const [hasConfirmedCloudSync, setHasConfirmedCloudSync] = useState(false);
   const [isReady, setIsReady] = useState(true);
   const [activeWritesCount, setActiveWritesCount] = useState(0);
   const [queuedMutationsCount, setQueuedMutationsCount] = useState<number>(
     () => loadPendingQueue().length
   );
   const [hasSnapshotPendingWrites, setHasSnapshotPendingWrites] = useState(false);
-  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(() => new Date().toISOString());
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
   const [lastSyncSummary, setLastSyncSummary] = useState<string | null>(
-    'Terhubung real-time dengan database pusat'
+    'Menghubungkan ke database pusat...'
   );
   const [syncError, setSyncError] = useState<string | null>(null);
   const [syncLogs, setSyncLogs] = useState<SyncLogEntry[]>(() => loadLocalSyncLogs());
@@ -497,6 +512,8 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
   const remotePulseVersionRef = useRef<string | null>(null);
   const remotePulseHashRef = useRef<string | null>(null);
   const pulseBootSyncedRef = useRef(false);
+  const autoRetryTimerRef = useRef<number | null>(null);
+  const manualReconnectFnRef = useRef<(() => void) | null>(null);
 
   const refreshPendingSnapshotFlag = useCallback(() => {
     const anyPending = Object.values(pendingColWritesRef.current).some(Boolean);
@@ -840,9 +857,244 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
     }
   }, [broadcastSyncMeta, flushPendingQueue, recordSyncLog]);
 
-  // Core lightweight listeners, cloud seed bootstrap, & credential initialization
+  // Core lightweight listeners, cold-start server bootstrap with timeout/auto-retry, & credential initialization
   useEffect(() => {
     let active = true;
+    let currentAttempt = 0;
+
+    const clearAutoRetryTimer = () => {
+      if (autoRetryTimerRef.current !== null) {
+        window.clearTimeout(autoRetryTimerRef.current);
+        autoRetryTimerRef.current = null;
+      }
+    };
+
+    const normalizeServerDocs = (colName: string, rawDocs: Array<Record<string, unknown>>) =>
+      rawDocs.map((d) => {
+        if (colName === 'subjects') {
+          const nama = String(d.nama || '');
+          return {
+            ...d,
+            nama,
+            kode: String(d.kode || nama.slice(0, 5).toUpperCase()),
+            createdAt: String(d.createdAt || new Date().toISOString()),
+          };
+        }
+        if (colName === 'classes') {
+          const nama = String(d.nama || '');
+          return {
+            ...d,
+            nama,
+            tingkat: String(d.tingkat || nama),
+            createdAt: String(d.createdAt || new Date().toISOString()),
+          };
+        }
+        if (colName === 'teachers') {
+          const primaryMapel = String(d.mataPelajaran || d.mapel || 'Matematika');
+          const list = Array.isArray(d.mataPelajaranList)
+            ? d.mataPelajaranList.map((m) => String(m)).filter(Boolean)
+            : [primaryMapel];
+          return {
+            ...d,
+            nama: String(d.nama || ''),
+            mataPelajaran: primaryMapel,
+            mataPelajaranList: Array.from(new Set([primaryMapel, ...list])),
+            usernameHash: String(d.usernameHash || ''),
+            usernameMasked: '••••••••',
+            passwordHash: String(d.passwordHash || d.passHash || ''),
+            aktif: d.aktif !== false,
+            createdAt: String(d.createdAt || new Date().toISOString()),
+          };
+        }
+        if (colName === 'exams') {
+          return {
+            ...d,
+            kelasTarget: Array.isArray(d.kelasTarget) ? d.kelasTarget : ['Semua Kelas'],
+            questionsSnapshot: Array.isArray(d.questionsSnapshot) ? d.questionsSnapshot : [],
+          };
+        }
+        return d;
+      });
+
+    const syncInitialDataFromServer = async (attemptNum: number) => {
+      if (!active) return;
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        setCloudConnected(false);
+        setConnectionPhase('offline');
+        setConnectionError('Perangkat tidak terhubung ke internet.');
+        return;
+      }
+
+      setConnectionPhase(attemptNum === 0 ? 'connecting' : 'retrying');
+      setRetryAttempt(attemptNum);
+      if (attemptNum === 0) {
+        setConnectionError(null);
+      }
+
+      try {
+        // Verify standalone API health asynchronously alongside direct Firestore server fetch (6.5s strict timeout)
+        void fetchWithTimeout(`/api/health?_cb=${Date.now()}`, { cache: 'no-store' }, 5000).catch(
+          () => null
+        );
+
+        const metaRef = doc(db, 'settings', 'cbt_bootstrap');
+        const [metaSnap, subjSnap, clsSnap, teachSnap, adminSnap, examSnap] = await withTimeout(
+          Promise.all([
+            getDocFromServer(metaRef),
+            getDocsFromServer(collection(db, 'subjects')),
+            getDocsFromServer(collection(db, 'classes')),
+            getDocsFromServer(collection(db, 'teachers')),
+            getDocsFromServer(collection(db, 'admins')),
+            getDocsFromServer(collection(db, 'exams')),
+          ]),
+          DEFAULT_CONNECTION_TIMEOUT_MS,
+          'Koneksi ke database pusat melewati batas waktu (6,5 detik).'
+        );
+
+        if (!active) return;
+
+        if (!metaSnap.exists()) {
+          const seeded = await buildInitialState();
+          const current = stateRef.current;
+          const subjectsToSeed = current.subjects.length ? current.subjects : seeded.subjects;
+          const classesToSeed = current.classes.length ? current.classes : seeded.classes;
+          const teachersToSeed = current.teachers.length ? current.teachers : seeded.teachers;
+          const questionsToSeed = current.questions.length ? current.questions : seeded.questions;
+          const examsToSeed = current.exams.length ? current.exams : seeded.exams;
+
+          await withTimeout(
+            Promise.all([
+              commitFirestoreSetChunks(
+                'subjects',
+                subjectsToSeed.map((s) => ({ id: s.id, data: s as unknown as Record<string, unknown> }))
+              ),
+              commitFirestoreSetChunks(
+                'classes',
+                classesToSeed.map((c) => ({ id: c.id, data: c as unknown as Record<string, unknown> }))
+              ),
+              commitFirestoreSetChunks(
+                'teachers',
+                teachersToSeed.map((t) => ({ id: t.id, data: t as unknown as Record<string, unknown> }))
+              ),
+              commitFirestoreSetChunks(
+                'questions',
+                questionsToSeed.map((q) => ({ id: q.id, data: q as unknown as Record<string, unknown> }))
+              ),
+              commitFirestoreSetChunks(
+                'exams',
+                examsToSeed.map((ex) => ({ id: ex.id, data: ex as unknown as Record<string, unknown> }))
+              ),
+            ]),
+            DEFAULT_CONNECTION_TIMEOUT_MS,
+            'Inisialisasi database awal melewati batas waktu.'
+          );
+          await setDoc(metaRef, {
+            seeded: true,
+            seededAt: new Date().toISOString(),
+          });
+        }
+
+        cloudBootstrapDoneRef.current = true;
+        cloudSeededConfirmRef.current = true;
+        hadCloudDocsRef.current = {
+          subjects: true,
+          classes: true,
+          teachers: true,
+          exams: true,
+          questions: true,
+          results: true,
+        };
+
+        const primaryAdmin = await buildPrimaryAdminAccount();
+        if (!active) return;
+
+        const filterSnap = (colName: string, snapDocs: typeof subjSnap.docs) =>
+          normalizeServerDocs(
+            colName,
+            filterOutPendingDeletes(
+              snapDocs.map((d) => ({ ...(d.data() as Record<string, unknown>), id: d.id })),
+              pendingDeletedIdsRef.current,
+              (d) => `${colName}:${String((d as Record<string, unknown>).id)}`
+            )
+          );
+
+        const nextSubjects = !subjSnap.empty
+          ? (filterSnap('subjects', subjSnap.docs) as unknown as SubjectItem[])
+          : null;
+        const nextClasses = !clsSnap.empty
+          ? (filterSnap('classes', clsSnap.docs) as unknown as ClassItem[])
+          : null;
+        const nextTeachers = !teachSnap.empty
+          ? (filterSnap('teachers', teachSnap.docs) as unknown as TeacherAccount[])
+          : null;
+        const nextExams = !examSnap.empty
+          ? (filterSnap('exams', examSnap.docs) as unknown as ExamSchedule[])
+          : null;
+
+        const rawAdmins = adminSnap.docs.map((d) => ({
+          ...(d.data() as Record<string, unknown>),
+          id: d.id,
+        })) as unknown as AdminAccount[];
+        const cleanAdmins = rawAdmins.filter(
+          (a) => !LEGACY_ADMIN_IDS.includes(a.id) && a.id !== PRIMARY_ADMIN_ID
+        );
+
+        setState((prev) => {
+          const next: CbtDatabaseState = {
+            ...prev,
+            subjects: nextSubjects ?? prev.subjects,
+            classes: nextClasses ?? prev.classes,
+            teachers: nextTeachers ?? prev.teachers,
+            admins: [primaryAdmin, ...cleanAdmins],
+            exams: nextExams ?? prev.exams,
+          };
+          saveLocalState(next);
+          return next;
+        });
+
+        clearAutoRetryTimer();
+        setCloudConnected(true);
+        setConnectionPhase('connected');
+        setConnectionError(null);
+        setRetryAttempt(0);
+        setHasConfirmedCloudSync(true);
+        setSyncError(null);
+        setLastSyncedAt(new Date().toISOString());
+        setLastSyncSummary('Terhubung real-time dengan database pusat');
+
+        if (pendingQueueRef.current.length > 0) {
+          void flushPendingQueue();
+        }
+      } catch (err) {
+        if (!active) return;
+        const msg =
+          err instanceof Error && err.message
+            ? err.message
+            : 'Gagal menghubungi database pusat.';
+        setConnectionError(msg);
+
+        if (attemptNum < MAX_AUTO_RETRY_ATTEMPTS) {
+          const nextAttempt = attemptNum + 1;
+          const delayMs = computeRetryDelayMs(nextAttempt);
+          setConnectionPhase('retrying');
+          setRetryAttempt(nextAttempt);
+          clearAutoRetryTimer();
+          autoRetryTimerRef.current = window.setTimeout(() => {
+            autoRetryTimerRef.current = null;
+            currentAttempt = nextAttempt;
+            void syncInitialDataFromServer(nextAttempt);
+          }, delayMs);
+        } else {
+          setConnectionPhase('error');
+        }
+      }
+    };
+
+    manualReconnectFnRef.current = () => {
+      clearAutoRetryTimer();
+      currentAttempt = 0;
+      void syncInitialDataFromServer(0);
+    };
 
     const init = async () => {
       const primaryAdmin = await buildPrimaryAdminAccount();
@@ -887,73 +1139,11 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
       }
       if (active) setIsReady(true);
 
-      // Ensure initial seed exists in Firestore if cloud database has never been bootstrapped,
-      // so editing or deleting any default subject/class/teacher/exam syncs cleanly across all devices!
-      if (!cloudBootstrapDoneRef.current && (typeof navigator === 'undefined' || navigator.onLine)) {
-        cloudBootstrapDoneRef.current = true;
-        try {
-          const metaRef = doc(db, 'settings', 'cbt_bootstrap');
-          const metaSnap = await getDocFromServer(metaRef).catch(() => null);
-          if (!active) return;
-
-          if (metaSnap && metaSnap.exists()) {
-            cloudSeededConfirmRef.current = true;
-            hadCloudDocsRef.current = {
-              subjects: true,
-              classes: true,
-              teachers: true,
-              exams: true,
-              questions: true,
-              results: true,
-            };
-          } else if (metaSnap && !metaSnap.exists()) {
-            const seeded = await buildInitialState();
-            const current = stateRef.current;
-            const subjectsToSeed = current.subjects.length ? current.subjects : seeded.subjects;
-            const classesToSeed = current.classes.length ? current.classes : seeded.classes;
-            const teachersToSeed = current.teachers.length ? current.teachers : seeded.teachers;
-            const questionsToSeed = current.questions.length ? current.questions : seeded.questions;
-            const examsToSeed = current.exams.length ? current.exams : seeded.exams;
-
-            await Promise.all([
-              commitFirestoreSetChunks(
-                'subjects',
-                subjectsToSeed.map((s) => ({ id: s.id, data: s as unknown as Record<string, unknown> }))
-              ),
-              commitFirestoreSetChunks(
-                'classes',
-                classesToSeed.map((c) => ({ id: c.id, data: c as unknown as Record<string, unknown> }))
-              ),
-              commitFirestoreSetChunks(
-                'teachers',
-                teachersToSeed.map((t) => ({ id: t.id, data: t as unknown as Record<string, unknown> }))
-              ),
-              commitFirestoreSetChunks(
-                'questions',
-                questionsToSeed.map((q) => ({ id: q.id, data: q as unknown as Record<string, unknown> }))
-              ),
-              commitFirestoreSetChunks(
-                'exams',
-                examsToSeed.map((ex) => ({ id: ex.id, data: ex as unknown as Record<string, unknown> }))
-              ),
-            ]);
-            await setDoc(metaRef, {
-              seeded: true,
-              seededAt: new Date().toISOString(),
-            });
-            cloudSeededConfirmRef.current = true;
-          }
-        } catch {
-          // Offline / unreachable; snapshots & queue will recover automatically when online
-        }
-      }
-
-      if (active && pendingQueueRef.current.length > 0) {
-        void flushPendingQueue();
-      }
+      // Run initial server sync asynchronously so UI & login render immediately without blocking
+      void syncInitialDataFromServer(currentAttempt);
     };
 
-    init();
+    void init();
 
     // Multi-tab instant sync (never wipe in-memory liveStreams!)
     if (typeof BroadcastChannel !== 'undefined') {
@@ -1012,9 +1202,13 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
     const onOnline = () => {
       setCloudConnected(true);
       setSyncError(null);
+      manualReconnectFnRef.current?.();
       void flushPendingQueue();
     };
-    const onOffline = () => setCloudConnected(false);
+    const onOffline = () => {
+      setCloudConnected(false);
+      setConnectionPhase('offline');
+    };
     const onBeforeUnload = () => {
       if (saveTimerRef.current !== null) {
         window.clearTimeout(saveTimerRef.current);
@@ -1053,6 +1247,14 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
 
             if (!snap.metadata.fromCache) {
               setCloudConnected(true);
+              setConnectionPhase('connected');
+              setConnectionError(null);
+              setRetryAttempt(0);
+              setHasConfirmedCloudSync(true);
+              if (autoRetryTimerRef.current !== null) {
+                window.clearTimeout(autoRetryTimerRef.current);
+                autoRetryTimerRef.current = null;
+              }
               if (!snap.metadata.hasPendingWrites && pendingQueueRef.current.length === 0) {
                 setLastSyncedAt(new Date().toISOString());
               }
@@ -1292,6 +1494,8 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
 
     return () => {
       active = false;
+      clearAutoRetryTimer();
+      manualReconnectFnRef.current = null;
       window.clearInterval(retryIntervalId);
       unsubs.forEach((u) => u());
       bcRef.current?.close();
@@ -2263,15 +2467,25 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
     syncError,
   ]);
 
+  const reconnectNow = useCallback(async () => {
+    manualReconnectFnRef.current?.();
+    await forceSyncNow();
+  }, [forceSyncNow]);
+
   return {
     ...state,
     cloudConnected,
+    connectionPhase,
+    connectionError,
+    retryAttempt,
+    hasConfirmedCloudSync,
     syncInfo,
     syncLogs,
     pulseAppVersion,
     pulseBuildHash,
     deviceId: deviceIdRef.current,
     forceSyncNow,
+    reconnectNow,
     isReady,
     addSubject,
     updateSubject,

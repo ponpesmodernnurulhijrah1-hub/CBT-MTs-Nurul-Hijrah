@@ -163,26 +163,36 @@ function pingWindowClientVersion(client: WindowClient, timeoutMs = 850): Promise
   });
 }
 
+async function fetchWithSwTimeout(url: string, timeoutMs = 4000): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(new Request(url, { cache: 'reload', credentials: 'same-origin' }), {
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function warmStartUrlAndManifest(): Promise<void> {
   try {
     const pagesCache = await self.caches.open(PAGES_CACHE);
-    const rootRes = await fetch(new Request('/', { cache: 'reload', credentials: 'same-origin' }));
+    const rootRes = await fetchWithSwTimeout('/', 4000);
     if (rootRes.ok) {
       await pagesCache.put('/', rootRes.clone());
     }
   } catch {
-    // Ignore transient offline errors during install warm-up
+    // Ignore transient offline/timeout errors during install warm-up
   }
   try {
     const manifestCache = await self.caches.open(MANIFEST_CACHE);
-    const manifestRes = await fetch(
-      new Request('/manifest.webmanifest', { cache: 'reload', credentials: 'same-origin' })
-    );
+    const manifestRes = await fetchWithSwTimeout('/manifest.webmanifest', 4000);
     if (manifestRes.ok) {
       await manifestCache.put('/manifest.webmanifest', manifestRes.clone());
     }
   } catch {
-    // Ignore transient offline errors during install warm-up
+    // Ignore transient offline/timeout errors during install warm-up
   }
 }
 

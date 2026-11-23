@@ -184,15 +184,28 @@
             } catch (e) {}
           }
 
-          // Cross-check authoritative server version manifest immediately so even cached HTML shells upgrade cleanly.
+          // Cross-check authoritative server version manifest immediately with strict 5s timeout so slow cold starts never stall boot.
           var verifyServer = function (endpoint) {
+            var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+            var timerId = controller
+              ? setTimeout(function () {
+                  controller.abort();
+                }, 5000)
+              : null;
             return fetch(endpoint + '?_cb=' + Date.now(), {
               cache: 'no-store',
               headers: { 'Cache-Control': 'no-cache' },
-            }).then(function (r) {
-              if (!r.ok) throw new Error('Manifest unavailable');
-              return r.json();
-            });
+              signal: controller ? controller.signal : undefined,
+            })
+              .then(function (r) {
+                if (timerId !== null) clearTimeout(timerId);
+                if (!r.ok) throw new Error('Manifest unavailable');
+                return r.json();
+              })
+              .catch(function (err) {
+                if (timerId !== null) clearTimeout(timerId);
+                throw err;
+              });
           };
 
           verifyServer('/api/version')
@@ -245,7 +258,8 @@
     <link rel="dns-prefetch" href="https://firestore.googleapis.com" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" media="print" onload="this.media='all'" />
+    <noscript><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" /></noscript>
   </head>
   <body class="ios-mesh-bg text-slate-900 antialiased selection:bg-emerald-200 selection:text-emerald-950">
     <div id="root"></div>

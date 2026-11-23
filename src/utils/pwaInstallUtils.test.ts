@@ -15,6 +15,7 @@ test('detectInstallContext identifies standalone, iOS, iPadOS, Android, and in-a
   assert.equal(androidChrome.isIOS, false);
   assert.equal(androidChrome.isInAppBrowser, false);
   assert.equal(androidChrome.isStandalone, false);
+  assert.equal(androidChrome.browserKind, 'chrome');
 
   const whatsappWebView = detectInstallContext({
     userAgent:
@@ -24,6 +25,7 @@ test('detectInstallContext identifies standalone, iOS, iPadOS, Android, and in-a
   });
   assert.equal(whatsappWebView.isInAppBrowser, true);
   assert.equal(whatsappWebView.isAndroid, true);
+  assert.equal(whatsappWebView.browserKind, 'webview');
 
   const iPadSafari = detectInstallContext({
     userAgent:
@@ -33,6 +35,20 @@ test('detectInstallContext identifies standalone, iOS, iPadOS, Android, and in-a
     isSecureContext: true,
   });
   assert.equal(iPadSafari.isIOS, true);
+  assert.equal(iPadSafari.browserKind, 'safari-ios');
+
+  const edgeDesktop = detectInstallContext({
+    userAgent:
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0',
+    isSecureContext: true,
+  });
+  assert.equal(edgeDesktop.browserKind, 'edge');
+
+  const firefoxAndroid = detectInstallContext({
+    userAgent: 'Mozilla/5.0 (Android 14; Mobile; rv:127.0) Gecko/127.0 Firefox/127.0',
+    isSecureContext: true,
+  });
+  assert.equal(firefoxAndroid.browserKind, 'firefox');
 
   const installedPwa = detectInstallContext({
     userAgent: 'Mozilla/5.0 (Linux; Android 14) Chrome/126.0.0.0',

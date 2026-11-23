@@ -1,14 +1,20 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Cpu, RefreshCw, WifiOff } from 'lucide-react';
+import { AlertTriangle, Cpu, RefreshCw, RotateCw, WifiOff } from 'lucide-react';
 import type { AdminAccount, ExamResult, TeacherAccount, UserRole } from './types/cbt';
 import { useCbtStore } from './hooks/useCbtStore';
 import { useAppUpdater } from './hooks/useAppUpdater';
 import { usePWAInstall } from './hooks/usePWAInstall';
 import { TopBar } from './components/TopBar';
 import { StudentPortal } from './components/StudentPortal';
+import { PortalErrorBoundary } from './components/PortalErrorBoundary';
 import { VirtualPetAssistant, type PetActivitySignal } from './components/VirtualPetAssistant';
 import { exportExamResultsToExcel } from './utils/exportHelpers';
 import { getTeacherSubjects } from './utils/storeSyncUtils';
+import {
+  MAX_AUTO_RETRY_ATTEMPTS,
+  deriveConnectionBannerState,
+  retryLazyImport,
+} from './utils/connectionUtils';
 import {
   SW_HEARTBEAT_INTERVAL_MS,
   shouldSoftReloadFromSwHeartbeat,
@@ -19,21 +25,27 @@ import type { AdminTab } from './components/AdminPortal';
 import type { PetActivityEvent, PetAppContextSummary, PetClientAction } from './utils/virtualPetUtils';
 
 const QRInstallModal = lazy(() =>
-  import('./components/QRInstallModal').then((m) => ({ default: m.QRInstallModal }))
+  retryLazyImport(() => import('./components/QRInstallModal')).then((m) => ({
+    default: m.QRInstallModal,
+  }))
 );
 const GoogleSheetsExportModal = lazy(() =>
-  import('./components/GoogleSheetsExportModal').then((m) => ({
+  retryLazyImport(() => import('./components/GoogleSheetsExportModal')).then((m) => ({
     default: m.GoogleSheetsExportModal,
   }))
 );
 const TeacherPortal = lazy(() =>
-  import('./components/TeacherPortal').then((m) => ({ default: m.TeacherPortal }))
+  retryLazyImport(() => import('./components/TeacherPortal')).then((m) => ({
+    default: m.TeacherPortal,
+  }))
 );
 const AdminPortal = lazy(() =>
-  import('./components/AdminPortal').then((m) => ({ default: m.AdminPortal }))
+  retryLazyImport(() => import('./components/AdminPortal')).then((m) => ({
+    default: m.AdminPortal,
+  }))
 );
 const VersionDiagnosticModal = lazy(() =>
-  import('./components/VersionDiagnosticModal').then((m) => ({
+  retryLazyImport(() => import('./components/VersionDiagnosticModal')).then((m) => ({
     default: m.VersionDiagnosticModal,
   }))
 );
@@ -103,9 +115,51 @@ export default function App() {
   } = useAppUpdater(isExamLocked, store.pulseAppVersion, store.pulseBuildHash);
   const pwaInstall = usePWAInstall();
   const [updateCheckStatus, setUpdateCheckStatus] = useState<string | null>(null);
+  const [slowConnectingElapsed, setSlowConnectingElapsed] = useState(false);
+  const [isManualReconnecting, setIsManualReconnecting] = useState(false);
   const statusClearTimerRef = useRef<number | null>(null);
   const isExamLockedRef = useRef(isExamLocked);
   const pendingHeartbeatReloadRef = useRef<{ swVersion?: string; swBuildHash?: string } | null>(null);
+
+  useEffect(() => {
+    if (store.connectionPhase !== 'connecting' || store.hasConfirmedCloudSync) {
+      setSlowConnectingElapsed(false);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setSlowConnectingElapsed(true);
+    }, 1500);
+    return () => window.clearTimeout(timer);
+  }, [store.connectionPhase, store.hasConfirmedCloudSync]);
+
+  const connectionBanner = useMemo(
+    () =>
+      deriveConnectionBannerState({
+        phase: store.connectionPhase,
+        attempt: store.retryAttempt,
+        maxAttempts: MAX_AUTO_RETRY_ATTEMPTS,
+        errorMessage: store.connectionError,
+        hasConfirmedCloudSync: store.hasConfirmedCloudSync,
+        slowConnectingElapsed,
+      }),
+    [
+      store.connectionPhase,
+      store.retryAttempt,
+      store.connectionError,
+      store.hasConfirmedCloudSync,
+      slowConnectingElapsed,
+    ]
+  );
+
+  const handleReconnectBackend = useCallback(async () => {
+    if (isManualReconnecting) return;
+    setIsManualReconnecting(true);
+    try {
+      await store.reconnectNow();
+    } finally {
+      setIsManualReconnecting(false);
+    }
+  }, [isManualReconnecting, store]);
 
   useEffect(() => {
     isExamLockedRef.current = isExamLocked;
@@ -544,11 +598,67 @@ export default function App() {
         </div>
       )}
 
-      {/* Offline indicator */}
-      {!store.cloudConnected && (
-        <div className="relative z-40 bg-amber-600/90 backdrop-blur-md border-b border-white/25 px-4 py-1.5 text-center text-xs font-medium text-white flex items-center justify-center gap-2 no-print">
-          <WifiOff className="h-3.5 w-3.5" />
-          <span>Mode Offline — Data tersimpan di perangkat dan akan tersinkron saat internet kembali.</span>
+      {/* Non-blocking cold-start connection / offline / error recovery banner */}
+      {connectionBanner.visible && (
+        <div
+          data-testid="connection-fallback-banner"
+          role={connectionBanner.tone === 'error' ? 'alert' : 'status'}
+          className={`relative z-40 border-b border-white/25 px-3 sm:px-5 py-2 text-xs font-medium text-white backdrop-blur-md no-print ${
+            connectionBanner.tone === 'error'
+              ? 'bg-rose-700/95'
+              : connectionBanner.tone === 'warning'
+                ? 'bg-amber-600/95'
+                : 'bg-slate-800/90'
+          }`}
+        >
+          <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-2">
+            <div className="flex items-start sm:items-center gap-2 min-w-0">
+              {store.connectionPhase === 'offline' ? (
+                <WifiOff className="h-4 w-4 shrink-0 mt-0.5 sm:mt-0" />
+              ) : connectionBanner.tone === 'error' ? (
+                <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5 sm:mt-0" />
+              ) : (
+                <RefreshCw
+                  className={`h-4 w-4 shrink-0 mt-0.5 sm:mt-0 ${
+                    store.connectionPhase === 'retrying' || store.connectionPhase === 'connecting'
+                      ? 'animate-spin'
+                      : ''
+                  }`}
+                />
+              )}
+              <div className="min-w-0">
+                <p className="font-bold leading-snug">{connectionBanner.title}</p>
+                <p className="text-[11px] text-white/90 leading-snug">{connectionBanner.detail}</p>
+              </div>
+            </div>
+
+            {connectionBanner.showRetryButton && (
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  data-testid="reconnect-backend-btn"
+                  disabled={isManualReconnecting}
+                  onClick={() => void handleReconnectBackend()}
+                  className="btn-press min-h-[34px] inline-flex items-center gap-1.5 rounded-lg border border-white/45 bg-white/20 px-3 py-1 text-[11px] font-bold text-white hover:bg-white/30 disabled:opacity-60 whitespace-nowrap"
+                >
+                  <RotateCw className={`h-3.5 w-3.5 ${isManualReconnecting ? 'animate-spin' : ''}`} />
+                  <span>
+                    {isManualReconnecting ? 'Menghubungkan...' : 'Muat Ulang / Hubungkan Ulang'}
+                  </span>
+                </button>
+                {store.connectionPhase === 'error' && !isExamLocked && (
+                  <button
+                    type="button"
+                    data-testid="hard-reload-page-btn"
+                    onClick={() => window.location.reload()}
+                    className="btn-press min-h-[34px] inline-flex items-center gap-1 rounded-lg bg-white px-3 py-1 text-[11px] font-bold text-rose-800 hover:bg-rose-50 whitespace-nowrap"
+                  >
+                    <span>Refresh Halaman</span>
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
@@ -559,8 +669,11 @@ export default function App() {
         }}
         onOpenQRInstall={() => setQrModalOpen(true)}
         canDirectInstall={pwaInstall.isInstallable && !pwaInstall.isInstalled}
-        onDirectInstall={() => {
-          void pwaInstall.install();
+        onDirectInstall={async () => {
+          const accepted = await pwaInstall.install();
+          if (!accepted) {
+            setQrModalOpen(true);
+          }
         }}
         isExamLocked={isExamLocked}
         syncInfo={loggedTeacher || loggedAdmin ? store.syncInfo : undefined}
@@ -601,85 +714,89 @@ export default function App() {
         )}
 
         {activeRole === 'guru' && (
-          <Suspense fallback={<PortalLoader />}>
-            <div key="guru" className="portal-transition-enter" data-portal-view="guru">
-              <TeacherPortal
-                loggedTeacher={loggedTeacher}
-                onSetLoggedTeacher={setLoggedTeacher}
-                subjects={store.subjects}
-                classes={store.classes}
-                questions={store.questions}
-                exams={store.exams}
-                results={store.results}
-                liveStreams={store.liveStreams}
-                onAuthenticate={store.authenticateTeacher}
-                onAddQuestion={store.addQuestion}
-                onAddQuestionsBatch={store.addQuestionsBatch}
-                onUpdateQuestion={store.updateQuestion}
-                onDeleteQuestion={store.deleteQuestion}
-                onDeleteQuestionsBatch={store.deleteQuestionsBatch}
-                onClearBankBySubject={store.clearBankBySubject}
-                onSaveExam={store.saveExamSchedule}
-                onToggleExamActive={store.toggleExamActive}
-                onDeleteExam={store.deleteExamSchedule}
-                onSendProctorWarning={store.sendProctorWarning}
-                onUpdateEssayScore={store.updateResultEssayScore}
-                activeTab={teacherTab}
-                onActiveTabChange={setTeacherTab}
-                externalCreateQuestionSignal={externalCreateQuestionSignal}
-                onOpenGoogleSheets={openGoogleSheetsModal}
-                syncInfo={store.syncInfo}
-                onForceSync={store.forceSyncNow}
-              />
-            </div>
-          </Suspense>
+          <PortalErrorBoundary portalLabel="Portal Guru" onRetry={() => void handleReconnectBackend()}>
+            <Suspense fallback={<PortalLoader />}>
+              <div key="guru" className="portal-transition-enter" data-portal-view="guru">
+                <TeacherPortal
+                  loggedTeacher={loggedTeacher}
+                  onSetLoggedTeacher={setLoggedTeacher}
+                  subjects={store.subjects}
+                  classes={store.classes}
+                  questions={store.questions}
+                  exams={store.exams}
+                  results={store.results}
+                  liveStreams={store.liveStreams}
+                  onAuthenticate={store.authenticateTeacher}
+                  onAddQuestion={store.addQuestion}
+                  onAddQuestionsBatch={store.addQuestionsBatch}
+                  onUpdateQuestion={store.updateQuestion}
+                  onDeleteQuestion={store.deleteQuestion}
+                  onDeleteQuestionsBatch={store.deleteQuestionsBatch}
+                  onClearBankBySubject={store.clearBankBySubject}
+                  onSaveExam={store.saveExamSchedule}
+                  onToggleExamActive={store.toggleExamActive}
+                  onDeleteExam={store.deleteExamSchedule}
+                  onSendProctorWarning={store.sendProctorWarning}
+                  onUpdateEssayScore={store.updateResultEssayScore}
+                  activeTab={teacherTab}
+                  onActiveTabChange={setTeacherTab}
+                  externalCreateQuestionSignal={externalCreateQuestionSignal}
+                  onOpenGoogleSheets={openGoogleSheetsModal}
+                  syncInfo={store.syncInfo}
+                  onForceSync={store.forceSyncNow}
+                />
+              </div>
+            </Suspense>
+          </PortalErrorBoundary>
         )}
 
         {activeRole === 'admin' && (
-          <Suspense fallback={<PortalLoader />}>
-            <div key="admin" className="portal-transition-enter" data-portal-view="admin">
-              <AdminPortal
-                loggedAdmin={loggedAdmin}
-                onSetLoggedAdmin={setLoggedAdmin}
-                subjects={store.subjects}
-                classes={store.classes}
-                teachers={store.teachers}
-                questions={store.questions}
-                exams={store.exams}
-                results={store.results}
-                liveStreams={store.liveStreams}
-                onAuthenticate={store.authenticateAdmin}
-                onAddSubject={store.addSubject}
-                onUpdateSubject={store.updateSubject}
-                onDeleteSubject={store.deleteSubject}
-                onAddClass={store.addClass}
-                onUpdateClass={store.updateClass}
-                onDeleteClass={store.deleteClass}
-                onAddTeacher={store.addTeacher}
-                onUpdateTeacher={store.updateTeacher}
-                onDeleteTeacher={store.deleteTeacher}
-                onAddQuestion={store.addQuestion}
-                onAddQuestionsBatch={store.addQuestionsBatch}
-                onUpdateQuestion={store.updateQuestion}
-                onDeleteQuestion={store.deleteQuestion}
-                onDeleteQuestionsBatch={store.deleteQuestionsBatch}
-                onClearBankBySubject={store.clearBankBySubject}
-                onSaveExam={store.saveExamSchedule}
-                onToggleExamActive={store.toggleExamActive}
-                onDeleteExam={store.deleteExamSchedule}
-                onSendProctorWarning={store.sendProctorWarning}
-                onUpdateEssayScore={store.updateResultEssayScore}
-                onDeleteResult={store.deleteExamResult}
-                activeTab={adminTab}
-                onActiveTabChange={setAdminTab}
-                onOpenGoogleSheets={openGoogleSheetsModal}
-                syncInfo={store.syncInfo}
-                syncLogs={store.syncLogs}
-                onForceSync={store.forceSyncNow}
-                onOpenDiagnostics={() => setDiagModalOpen(true)}
-              />
-            </div>
-          </Suspense>
+          <PortalErrorBoundary portalLabel="Portal Super Admin" onRetry={() => void handleReconnectBackend()}>
+            <Suspense fallback={<PortalLoader />}>
+              <div key="admin" className="portal-transition-enter" data-portal-view="admin">
+                <AdminPortal
+                  loggedAdmin={loggedAdmin}
+                  onSetLoggedAdmin={setLoggedAdmin}
+                  subjects={store.subjects}
+                  classes={store.classes}
+                  teachers={store.teachers}
+                  questions={store.questions}
+                  exams={store.exams}
+                  results={store.results}
+                  liveStreams={store.liveStreams}
+                  onAuthenticate={store.authenticateAdmin}
+                  onAddSubject={store.addSubject}
+                  onUpdateSubject={store.updateSubject}
+                  onDeleteSubject={store.deleteSubject}
+                  onAddClass={store.addClass}
+                  onUpdateClass={store.updateClass}
+                  onDeleteClass={store.deleteClass}
+                  onAddTeacher={store.addTeacher}
+                  onUpdateTeacher={store.updateTeacher}
+                  onDeleteTeacher={store.deleteTeacher}
+                  onAddQuestion={store.addQuestion}
+                  onAddQuestionsBatch={store.addQuestionsBatch}
+                  onUpdateQuestion={store.updateQuestion}
+                  onDeleteQuestion={store.deleteQuestion}
+                  onDeleteQuestionsBatch={store.deleteQuestionsBatch}
+                  onClearBankBySubject={store.clearBankBySubject}
+                  onSaveExam={store.saveExamSchedule}
+                  onToggleExamActive={store.toggleExamActive}
+                  onDeleteExam={store.deleteExamSchedule}
+                  onSendProctorWarning={store.sendProctorWarning}
+                  onUpdateEssayScore={store.updateResultEssayScore}
+                  onDeleteResult={store.deleteExamResult}
+                  activeTab={adminTab}
+                  onActiveTabChange={setAdminTab}
+                  onOpenGoogleSheets={openGoogleSheetsModal}
+                  syncInfo={store.syncInfo}
+                  syncLogs={store.syncLogs}
+                  onForceSync={store.forceSyncNow}
+                  onOpenDiagnostics={() => setDiagModalOpen(true)}
+                />
+              </div>
+            </Suspense>
+          </PortalErrorBoundary>
         )}
       </div>
 

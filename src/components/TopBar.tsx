@@ -61,21 +61,33 @@ export const TopBar: React.FC<TopBarProps> = ({
               type="button"
               onClick={onDirectInstall}
               data-testid="topbar-direct-install-btn"
-              className="btn-press min-h-[38px] sm:min-h-[40px] inline-flex items-center gap-1.5 rounded-xl bg-slate-900 border border-slate-700/60 px-2.5 lg:px-3 py-1.5 text-xs lg:text-sm font-semibold text-white hover:bg-slate-800 whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700"
+              aria-label="Instal Aplikasi ke Perangkat"
+              className="btn-press min-h-[40px] inline-flex items-center gap-1.5 lg:gap-2 rounded-xl bg-emerald-700 border border-emerald-500/50 px-3 lg:px-4 py-1.5 text-xs lg:text-sm font-bold text-white shadow-[0_6px_18px_-6px_rgba(4,120,87,0.65)] hover:bg-emerald-800 whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700"
             >
-              <Download className="h-3.5 w-3.5 shrink-0 text-emerald-400" />
-              <span className="hidden sm:inline">Install App</span>
-              <span className="sm:hidden">Install</span>
+              <Download className="h-4 w-4 shrink-0" />
+              <span>Instal Aplikasi</span>
             </button>
           )}
           <button
             type="button"
             onClick={onOpenQRInstall}
-            className="btn-press min-h-[38px] sm:min-h-[40px] inline-flex items-center gap-1.5 lg:gap-2 rounded-xl bg-emerald-700/95 border border-emerald-500/40 px-2.5 lg:px-3.5 py-1.5 text-xs lg:text-sm font-semibold text-white hover:bg-emerald-800 whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700"
+            data-testid="topbar-qr-install-btn"
+            aria-label="Buka Panduan Instal & Kode QR"
+            className={`btn-press min-h-[40px] inline-flex items-center gap-1.5 lg:gap-2 rounded-xl px-2.5 lg:px-3.5 py-1.5 text-xs lg:text-sm font-semibold whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700 ${
+              canDirectInstall
+                ? 'border border-white/75 bg-white/75 text-slate-800 hover:bg-white'
+                : 'bg-emerald-700/95 border border-emerald-500/40 text-white hover:bg-emerald-800'
+            }`}
           >
             <QrCode className="h-4 w-4 shrink-0" />
-            <span className="hidden lg:inline">Install HP / QR</span>
-            <span className="lg:hidden">Install QR</span>
+            {canDirectInstall ? (
+              <span className="hidden sm:inline">QR / Panduan</span>
+            ) : (
+              <>
+                <span className="hidden lg:inline">Install HP / QR</span>
+                <span className="lg:hidden">Install QR</span>
+              </>
+            )}
           </button>
         </div>
 

@@ -29,6 +29,8 @@ try {
     localCache: persistentLocalCache({
       tabManager: persistentMultipleTabManager(),
     }),
+    experimentalAutoDetectLongPolling: true,
+    ignoreUndefinedProperties: true,
   });
 } catch {
   firestoreInstance = getFirestore(app);

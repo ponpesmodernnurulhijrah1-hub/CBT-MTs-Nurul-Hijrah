@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   detectInstallContext,
   resolveInstallAvailability,
+  type BrowserKind,
   type InstallAvailabilityMode,
   type InstallContext,
 } from '../utils/pwaInstallUtils';
@@ -11,11 +12,14 @@ export interface BeforeInstallPromptEvent extends Event {
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
 }
 
+export type PromptOutcome = 'accepted' | 'dismissed' | null;
+
 interface GlobalPWAState {
   deferredPrompt: BeforeInstallPromptEvent | null;
   isInstalled: boolean;
   swActive: boolean;
   manifestReady: boolean;
+  lastOutcome: PromptOutcome;
 }
 
 const listeners = new Set<() => void>();
@@ -26,6 +30,7 @@ const globalState: GlobalPWAState = {
   isInstalled: false,
   swActive: false,
   manifestReady: false,
+  lastOutcome: null,
 };
 
 function notifyListeners() {
@@ -94,12 +99,14 @@ export function initPWAInstallListener(): void {
   const onBeforeInstallPrompt = (e: Event) => {
     e.preventDefault();
     globalState.deferredPrompt = e as BeforeInstallPromptEvent;
+    globalState.lastOutcome = null;
     notifyListeners();
   };
 
   const onAppInstalled = () => {
     globalState.isInstalled = true;
     globalState.deferredPrompt = null;
+    globalState.lastOutcome = 'accepted';
     notifyListeners();
   };
 
@@ -161,6 +168,8 @@ export interface PWAInstallHookResult {
   isEmbeddedIframe: boolean;
   isInAppBrowser: boolean;
   isSecureContext: boolean;
+  browserKind: BrowserKind;
+  lastOutcome: PromptOutcome;
   swActive: boolean;
   manifestReady: boolean;
   availabilityMode: InstallAvailabilityMode;
@@ -186,14 +195,20 @@ export function usePWAInstall(): PWAInstallHookResult {
     try {
       await promptEvent.prompt();
       const { outcome } = await promptEvent.userChoice;
+      // Browsers consume a BeforeInstallPromptEvent after one prompt() call regardless of outcome.
+      globalState.deferredPrompt = null;
+      globalState.lastOutcome = outcome;
       if (outcome === 'accepted') {
         globalState.isInstalled = true;
-        globalState.deferredPrompt = null;
         notifyListeners();
         return true;
       }
+      notifyListeners();
       return false;
     } catch {
+      globalState.deferredPrompt = null;
+      globalState.lastOutcome = 'dismissed';
+      notifyListeners();
       return false;
     }
   }, []);
@@ -216,6 +231,8 @@ export function usePWAInstall(): PWAInstallHookResult {
     isEmbeddedIframe: context.isEmbeddedIframe,
     isInAppBrowser: context.isInAppBrowser,
     isSecureContext: context.isSecureContext,
+    browserKind: context.browserKind,
+    lastOutcome: globalState.lastOutcome,
     swActive: globalState.swActive,
     manifestReady: globalState.manifestReady,
     availabilityMode,

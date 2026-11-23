@@ -403,7 +403,19 @@ function sendVersionManifest(_req: express.Request, res: express.Response) {
   });
 }
 
-// Fast version manifest endpoints + real-time SSE stream for instant (<500ms) update detection
+// Fast standalone health & version manifest endpoints (no editor session required)
+app.get('/api/health', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  const snap = computeVersionSnapshot();
+  res.json({
+    ok: true,
+    status: 'ready',
+    version: snap.version,
+    buildHash: snap.buildHash,
+    serverTime: new Date().toISOString(),
+  });
+});
+
 app.get('/api/version', sendVersionManifest);
 app.get('/version.json', sendVersionManifest);
 

@@ -16,6 +16,7 @@ import {
   shouldTriggerAppUpdate,
   type VersionSyncDiagnosis,
 } from '../utils/updaterLogic';
+import { fetchWithTimeout } from '../utils/connectionUtils';
 
 interface VersionPayload {
   version?: string;
@@ -143,10 +144,14 @@ async function fetchServerVersionManifest(): Promise<{
 } | null> {
   const cb = Date.now();
   try {
-    const res = await fetch(`/api/version?_cb=${cb}`, {
-      cache: 'no-store',
-      headers: { 'Cache-Control': 'no-cache' },
-    });
+    const res = await fetchWithTimeout(
+      `/api/version?_cb=${cb}`,
+      {
+        cache: 'no-store',
+        headers: { 'Cache-Control': 'no-cache' },
+      },
+      5000
+    );
     if (res.ok) {
       const payload = (await res.json()) as VersionPayload;
       if (payload && (payload.version || payload.buildHash || payload.buildId)) {
@@ -158,10 +163,14 @@ async function fetchServerVersionManifest(): Promise<{
   }
 
   try {
-    const fallbackRes = await fetch(`/version.json?_cb=${cb}`, {
-      cache: 'no-store',
-      headers: { 'Cache-Control': 'no-cache' },
-    });
+    const fallbackRes = await fetchWithTimeout(
+      `/version.json?_cb=${cb}`,
+      {
+        cache: 'no-store',
+        headers: { 'Cache-Control': 'no-cache' },
+      },
+      5000
+    );
     if (fallbackRes.ok) {
       const payload = (await fallbackRes.json()) as VersionPayload;
       if (payload && (payload.version || payload.buildHash || payload.buildId)) {
@@ -293,11 +302,13 @@ export function useAppUpdater(
         .then(async () => {
           if (shouldUnregisterSw) {
             try {
-              await fetch(buildCacheBustUrl(window.location.href, cacheKey), {
-                cache: 'reload',
-              });
+              await fetchWithTimeout(
+                buildCacheBustUrl(window.location.href, cacheKey),
+                { cache: 'reload' },
+                4500
+              );
             } catch {
-              // Ignore warm-fetch failures when offline
+              // Ignore warm-fetch failures when offline or slow
             }
           }
         })
@@ -518,25 +529,29 @@ export function useAppUpdater(
       if (!cancelled) setSwInfo(nextSw);
     };
 
-    // Real-time SSE listener for instant (<500ms) push updates whenever any build or file changes
+    // Defer real-time SSE listener slightly so initial UI hydration & database sync take priority
     let es: EventSource | null = null;
+    let sseStartTimerId: number | null = null;
     if (typeof window !== 'undefined' && 'EventSource' in window) {
-      try {
-        es = new EventSource('/api/version-stream');
-        const handleSsePayload = (ev: MessageEvent) => {
-          if (cancelled) return;
-          try {
-            const parsed = JSON.parse(String(ev.data || '{}')) as VersionPayload;
-            evaluateServerPayload(parsed, 'sse');
-          } catch {
-            // Ignore malformed keepalive/event payloads
-          }
-        };
-        es.addEventListener('version', handleSsePayload as EventListener);
-        es.onmessage = handleSsePayload;
-      } catch {
-        // Fallback polling continues seamlessly if EventSource fails
-      }
+      sseStartTimerId = window.setTimeout(() => {
+        if (cancelled) return;
+        try {
+          es = new EventSource('/api/version-stream');
+          const handleSsePayload = (ev: MessageEvent) => {
+            if (cancelled) return;
+            try {
+              const parsed = JSON.parse(String(ev.data || '{}')) as VersionPayload;
+              evaluateServerPayload(parsed, 'sse');
+            } catch {
+              // Ignore malformed keepalive/event payloads
+            }
+          };
+          es.addEventListener('version', handleSsePayload as EventListener);
+          es.onmessage = handleSsePayload;
+        } catch {
+          // Fallback polling continues seamlessly if EventSource fails
+        }
+      }, 1200);
     }
 
     // Cross-tab instant synchronization
@@ -704,6 +719,9 @@ export function useAppUpdater(
         if (swReg && onUpdateFound) {
           swReg.removeEventListener('updatefound', onUpdateFound);
         }
+      }
+      if (sseStartTimerId !== null) {
+        window.clearTimeout(sseStartTimerId);
       }
       if (es) es.close();
       if (bcRef.current) {
