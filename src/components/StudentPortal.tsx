@@ -154,6 +154,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
   const lastExitViolationTsRef = useRef(0);
   const wasFullscreenRef = useRef(false);
   const violationHistoryRef = useRef<ViolationLogEntry[]>([]);
+  const timerToastTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     registerAlarmAudioElement(alarmAudioRef.current);
@@ -221,6 +222,14 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
   useEffect(() => {
     return () => {
       stopPreviewHardware();
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach((t) => t.stop());
+        localStreamRef.current = null;
+      }
+      if (timerToastTimerRef.current !== null) {
+        window.clearTimeout(timerToastTimerRef.current);
+        timerToastTimerRef.current = null;
+      }
     };
   }, [stopPreviewHardware]);
 
@@ -436,13 +445,21 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
         warned15Ref.current = true;
         playWarningBeep();
         setTimerToast('Perhatian: Waktu ujian tersisa 15 menit lagi!');
-        window.setTimeout(() => setTimerToast(null), 6000);
+        if (timerToastTimerRef.current !== null) window.clearTimeout(timerToastTimerRef.current);
+        timerToastTimerRef.current = window.setTimeout(() => {
+          timerToastTimerRef.current = null;
+          setTimerToast(null);
+        }, 6000);
       }
       if (next > 0 && next <= 300 && !warned5Ref.current) {
         warned5Ref.current = true;
         playWarningBeep();
         setTimerToast('Peringatan Penting: Waktu ujian tinggal 5 menit lagi!');
-        window.setTimeout(() => setTimerToast(null), 7000);
+        if (timerToastTimerRef.current !== null) window.clearTimeout(timerToastTimerRef.current);
+        timerToastTimerRef.current = window.setTimeout(() => {
+          timerToastTimerRef.current = null;
+          setTimerToast(null);
+        }, 7000);
       }
       if (next <= 0) {
         handleUnifiedSubmitRef.current('Selesai', 'Waktu ujian habis (Auto-Submit)');
@@ -452,7 +469,13 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
     syncRemainingTime();
     const timerId = window.setInterval(syncRemainingTime, 1000);
 
-    return () => window.clearInterval(timerId);
+    return () => {
+      window.clearInterval(timerId);
+      if (timerToastTimerRef.current !== null) {
+        window.clearTimeout(timerToastTimerRef.current);
+        timerToastTimerRef.current = null;
+      }
+    };
   }, [stage]);
 
   // Ultra-High Security: App Exit / Switch App / Copy-Paste / Right-Click Protection
@@ -956,10 +979,10 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
     return (
       <>
         {persistentAudioElement}
-        <main className="mx-auto max-w-7xl px-4 sm:px-6 py-6 sm:py-8 panel-enter">
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
+        <main className="mx-auto max-w-7xl px-3.5 sm:px-6 py-4 sm:py-8 panel-enter">
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-5 lg:gap-6 items-stretch">
             {/* Left: Login Ujian Form + Interactive Readiness Tracker */}
-            <div className="lg:col-span-7 surface-card rounded-3xl p-6 sm:p-8 flex flex-col justify-between">
+            <div className="md:col-span-7 surface-card rounded-3xl p-5 sm:p-7 lg:p-8 flex flex-col justify-between">
               <div>
                 <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-600">
                   <span className="font-semibold text-slate-600">
@@ -991,7 +1014,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                   </div>
                   <div className="flex flex-wrap sm:grid sm:grid-cols-3 gap-1.5 sm:gap-2 text-[11px] sm:text-xs">
                     <div
-                      className={`flex flex-1 min-w-fit items-center gap-1.5 sm:gap-2 rounded-xl border px-2 sm:px-2.5 py-1.5 sm:py-2 transition-all duration-200 ${
+                      className={`flex flex-1 min-w-fit items-center gap-1.5 sm:gap-2 rounded-xl border px-2 sm:px-2.5 py-1.5 sm:py-2 transition-colors duration-200 ${
                         isNameReady
                           ? 'border-emerald-400/60 bg-white/75 text-emerald-900 font-semibold shadow-xs'
                           : 'border-white/50 bg-white/30 text-slate-600'
@@ -1007,7 +1030,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                       <span className="whitespace-nowrap">Identitas</span>
                     </div>
                     <div
-                      className={`flex flex-1 min-w-fit items-center gap-1.5 sm:gap-2 rounded-xl border px-2 sm:px-2.5 py-1.5 sm:py-2 transition-all duration-200 ${
+                      className={`flex flex-1 min-w-fit items-center gap-1.5 sm:gap-2 rounded-xl border px-2 sm:px-2.5 py-1.5 sm:py-2 transition-colors duration-200 ${
                         isExamReady
                           ? 'border-emerald-400/60 bg-white/75 text-emerald-900 font-semibold shadow-xs'
                           : 'border-white/50 bg-white/30 text-slate-600'
@@ -1023,7 +1046,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                       <span className="whitespace-nowrap">Jadwal</span>
                     </div>
                     <div
-                      className={`flex flex-1 min-w-fit items-center gap-1.5 sm:gap-2 rounded-xl border px-2 sm:px-2.5 py-1.5 sm:py-2 transition-all duration-200 ${
+                      className={`flex flex-1 min-w-fit items-center gap-1.5 sm:gap-2 rounded-xl border px-2 sm:px-2.5 py-1.5 sm:py-2 transition-colors duration-200 ${
                         isTokenReady
                           ? 'border-emerald-400/60 bg-white/75 text-emerald-900 font-semibold shadow-xs'
                           : 'border-white/50 bg-white/30 text-slate-600'
@@ -1152,11 +1175,11 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                     </div>
                   )}
 
-                  <div className="flex flex-wrap items-center gap-3 pt-1">
+                  <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-3 pt-1">
                     <button
                       type="submit"
                       disabled={startingExam || availableExams.length === 0}
-                      className="btn-press flex-1 min-w-[220px] flex items-center justify-center gap-2 rounded-xl bg-emerald-700 px-5 py-3 text-sm font-bold text-white shadow-[0_10px_24px_-10px_rgba(4,120,87,0.6)] hover:bg-emerald-800 disabled:opacity-50 whitespace-nowrap"
+                      className="btn-press min-h-[46px] flex-1 sm:min-w-[220px] flex items-center justify-center gap-2 rounded-xl bg-emerald-700 px-5 py-3 text-sm font-bold text-white shadow-[0_10px_24px_-10px_rgba(4,120,87,0.6)] hover:bg-emerald-800 disabled:opacity-50 whitespace-nowrap"
                     >
                       <Camera className="h-4 w-4 shrink-0" />
                       <span>
@@ -1170,7 +1193,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                       type="button"
                       disabled={previewChecking}
                       onClick={handleToggleHardwarePreview}
-                      className={`btn-press inline-flex items-center justify-center gap-2 rounded-xl border px-4 py-3 text-xs font-semibold whitespace-nowrap backdrop-blur-md ${
+                      className={`btn-press min-h-[46px] inline-flex items-center justify-center gap-2 rounded-xl border px-4 py-3 text-xs font-semibold whitespace-nowrap backdrop-blur-md ${
                         previewActive
                           ? 'border-red-300/70 bg-red-500/15 text-red-800 hover:bg-red-500/25'
                           : 'border-white/70 bg-white/55 text-slate-800 hover:bg-white/80'
@@ -1225,8 +1248,8 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                               </div>
                               <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/60">
                                 <div
-                                  className="h-full bg-emerald-600 transition-all duration-150"
-                                  style={{ width: `${Math.max(4, previewAudioLevel)}%` }}
+                                  className="h-full w-full origin-left bg-emerald-600 transition-transform duration-150"
+                                  style={{ transform: `scaleX(${Math.max(0.04, previewAudioLevel / 100)})` }}
                                 />
                               </div>
                             </div>
@@ -1240,7 +1263,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
             </div>
 
             {/* Right: Interactive Schedule Quick-Pick, Security Rules & PWA Card */}
-            <div className="lg:col-span-5 flex flex-col gap-5">
+            <div className="md:col-span-5 flex flex-col gap-5">
               {/* Clickable Quick Exam Switcher for Selected Class */}
               <div className="surface-card rounded-3xl p-5 space-y-3">
                 <div className="flex items-center justify-between gap-2">
@@ -1286,7 +1309,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                             setSelectedExamId(ex.id);
                             tokenInputRef.current?.focus();
                           }}
-                          className={`btn-press w-full rounded-2xl border px-3.5 py-2.5 text-left transition-all ${
+                          className={`btn-press w-full rounded-2xl border px-3.5 py-2.5 text-left transition-colors ${
                             isSelected
                               ? 'border-emerald-500/60 bg-emerald-500/15 shadow-xs'
                               : 'border-white/60 bg-white/40 hover:bg-white/70'
@@ -1663,7 +1686,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
               </p>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2.5 sm:gap-3">
+            <div className="flex flex-wrap items-center gap-2 sm:gap-3">
               <div className="text-right pr-2.5 border-r border-white/60">
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
                   Progres
@@ -1689,9 +1712,21 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
 
               <button
                 type="button"
+                onClick={() => {
+                  document
+                    .getElementById('student-question-navigator')
+                    ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }}
+                className="btn-press lg:hidden min-h-[40px] inline-flex items-center gap-1.5 rounded-xl border border-white/75 bg-white/75 px-3 py-2 text-xs font-bold text-slate-800 hover:bg-white whitespace-nowrap"
+              >
+                <span>Daftar Soal</span>
+              </button>
+
+              <button
+                type="button"
                 disabled={isSubmitting}
                 onClick={() => handleUnifiedSubmit('Pelanggaran', 'Paksa Keluar Darurat oleh Siswa')}
-                className="btn-press inline-flex items-center gap-1.5 rounded-xl bg-red-600/95 px-3.5 py-2 text-xs font-bold text-white hover:bg-red-700 whitespace-nowrap"
+                className="btn-press min-h-[40px] inline-flex items-center gap-1.5 rounded-xl bg-red-600/95 px-3.5 py-2 text-xs font-bold text-white hover:bg-red-700 whitespace-nowrap"
               >
                 <LogOut className="h-3.5 w-3.5" />
                 <span>Paksa Keluar</span>
@@ -1701,8 +1736,8 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
 
           <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/60">
             <div
-              className="h-full bg-emerald-600 transition-all duration-300"
-              style={{ width: `${progressPercent}%` }}
+              className="h-full w-full origin-left bg-emerald-600 transition-transform duration-300"
+              style={{ transform: `scaleX(${Math.max(0, Math.min(1, progressPercent / 100))})` }}
             />
           </div>
         </div>
@@ -1758,7 +1793,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                       onClick={() =>
                         setDoubtfulMap((prev) => ({ ...prev, [currentQ.id]: !prev[currentQ.id] }))
                       }
-                      className={`btn-press inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold transition-all whitespace-nowrap ${
+                      className={`btn-press inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
                         doubtfulMap[currentQ.id]
                           ? 'bg-amber-500 text-white shadow-xs'
                           : 'border border-white/65 bg-white/50 text-slate-700 hover:bg-white/80'
@@ -1793,7 +1828,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                       return (
                         <label
                           key={oIdx}
-                          className={`group flex cursor-pointer items-start gap-3 rounded-2xl border p-3.5 text-sm backdrop-blur-md transition-all duration-200 active:scale-[0.985] ${
+                          className={`group flex cursor-pointer items-start gap-3 rounded-2xl border p-3.5 text-sm transition-[transform,colors] duration-200 active:scale-[0.985] ${
                             selected
                               ? 'border-emerald-500/70 bg-emerald-500/15 font-medium text-emerald-950 shadow-[0_10px_24px_-12px_rgba(4,120,87,0.35)]'
                               : 'border-white/65 bg-white/45 text-slate-800 hover:-translate-y-0.5 hover:border-white/95 hover:bg-white/75 hover:shadow-sm'
@@ -1851,7 +1886,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                 type="button"
                 disabled={currentIdx === 0}
                 onClick={() => setCurrentIdx((i) => Math.max(0, i - 1))}
-                className="btn-press inline-flex items-center gap-1.5 rounded-xl border border-white/70 bg-white/55 px-4 py-2 text-xs font-semibold text-slate-800 hover:bg-white/85 disabled:opacity-40 whitespace-nowrap"
+                className="btn-press min-h-[44px] inline-flex items-center gap-1.5 rounded-xl border border-white/70 bg-white/55 px-4 py-2 text-xs font-semibold text-slate-800 hover:bg-white/85 disabled:opacity-40 whitespace-nowrap"
               >
                 <ChevronLeft className="h-4 w-4" />
                 <span>Sebelumnya</span>
@@ -1865,7 +1900,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                     onClick={() =>
                       setCurrentIdx((i) => Math.min(examQuestions.length - 1, i + 1))
                     }
-                    className="btn-press inline-flex items-center gap-1.5 rounded-xl bg-slate-900/95 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800 whitespace-nowrap"
+                    className="btn-press min-h-[44px] inline-flex items-center gap-1.5 rounded-xl bg-slate-900/95 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800 whitespace-nowrap"
                   >
                     <span className="kbd-hint hidden sm:inline-flex mr-1 bg-slate-800 border-slate-700 text-slate-200">&rarr;</span>
                     <span>Selanjutnya</span>
@@ -1876,7 +1911,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                     type="button"
                     disabled={isSubmitting}
                     onClick={() => setShowConfirmSubmit(true)}
-                    className="btn-press inline-flex items-center gap-1.5 rounded-xl bg-emerald-700 px-5 py-2 text-xs font-bold text-white hover:bg-emerald-800 whitespace-nowrap"
+                    className="btn-press min-h-[44px] inline-flex items-center gap-1.5 rounded-xl bg-emerald-700 px-5 py-2 text-xs font-bold text-white hover:bg-emerald-800 whitespace-nowrap"
                   >
                     <Send className="h-4 w-4" />
                     <span>{isSubmitting ? 'Mengirim...' : 'Kirim Jawaban'}</span>
@@ -1919,8 +1954,8 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                     </div>
                     <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/60">
                       <div
-                        className="h-full bg-emerald-600 transition-all duration-150"
-                        style={{ width: `${Math.max(5, audioLevel)}%` }}
+                        className="h-full w-full origin-left bg-emerald-600 transition-transform duration-150"
+                        style={{ transform: `scaleX(${Math.max(0.05, audioLevel / 100)})` }}
                       />
                     </div>
                   </div>
@@ -1960,7 +1995,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
             </div>
 
             {/* Interactive Question Navigator Grid */}
-            <div className="surface-card rounded-3xl p-4 space-y-3">
+            <div id="student-question-navigator" className="surface-card rounded-3xl p-4 space-y-3">
               <div className="flex items-center justify-between">
                 <h2 className="font-display text-xs font-bold text-slate-900">
                   Navigasi Nomor Soal
@@ -1975,7 +2010,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                 <button
                   type="button"
                   onClick={() => setNavFilter('ALL')}
-                  className={`btn-press rounded-lg py-1 text-[11px] font-semibold transition-all ${
+                  className={`btn-press rounded-lg py-1 text-[11px] font-semibold transition-colors ${
                     navFilter === 'ALL'
                       ? 'bg-white/85 text-slate-900 shadow-xs'
                       : 'text-slate-600 hover:text-slate-900'
@@ -1986,7 +2021,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                 <button
                   type="button"
                   onClick={() => setNavFilter('UNANSWERED')}
-                  className={`btn-press rounded-lg py-1 text-[11px] font-semibold transition-all ${
+                  className={`btn-press rounded-lg py-1 text-[11px] font-semibold transition-colors ${
                     navFilter === 'UNANSWERED'
                       ? 'bg-white/85 text-slate-900 shadow-xs'
                       : 'text-slate-600 hover:text-slate-900'
@@ -1997,7 +2032,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                 <button
                   type="button"
                   onClick={() => setNavFilter('DOUBTFUL')}
-                  className={`btn-press rounded-lg py-1 text-[11px] font-semibold transition-all ${
+                  className={`btn-press rounded-lg py-1 text-[11px] font-semibold transition-colors ${
                     navFilter === 'DOUBTFUL'
                       ? 'bg-amber-500 text-white shadow-xs'
                       : 'text-slate-600 hover:text-slate-900'
@@ -2028,7 +2063,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                         key={q.id}
                         type="button"
                         onClick={() => setCurrentIdx(idx)}
-                        className={`btn-press h-9 rounded-xl border font-mono-tabular text-xs transition-all ${cls} ${
+                        className={`btn-press h-9 rounded-xl border font-mono-tabular text-xs transition-colors ${cls} ${
                           isCurrent ? 'ring-2 ring-slate-900 ring-offset-1' : ''
                         }`}
                       >

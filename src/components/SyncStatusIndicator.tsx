@@ -179,7 +179,7 @@ export const SyncStatusIndicator: React.FC<SyncStatusIndicatorProps> = ({
         data-sync-status={syncInfo.status}
         aria-expanded={popoverOpen}
         aria-label={`Status Sinkronisasi: ${statusLabel}`}
-        className={`btn-press inline-flex items-center gap-2 rounded-2xl border px-3 py-1.5 text-left backdrop-blur-md transition-all shadow-xs ${toneClasses}`}
+        className={`btn-press inline-flex items-center gap-2 rounded-2xl border px-3 py-1.5 text-left backdrop-blur-md transition-colors shadow-xs ${toneClasses}`}
       >
         <span className="relative flex h-5 w-5 shrink-0 items-center justify-center rounded-lg bg-white/60">
           <Icon className={`h-3.5 w-3.5 ${isSyncing ? 'animate-spin' : ''}`} />

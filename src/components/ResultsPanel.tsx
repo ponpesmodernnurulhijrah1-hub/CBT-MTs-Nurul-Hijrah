@@ -303,9 +303,89 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({
         </div>
       </div>
 
-      {/* High-Density Clean Data Table */}
+      {/* Mobile Card List (< md) + Tablet/Desktop Data Table (>= md) */}
       <div className="surface-card overflow-hidden">
-        <div className="overflow-x-auto">
+        {/* Mobile Card View */}
+        <div className="md:hidden divide-y divide-white/50">
+          {filteredResults.length === 0 ? (
+            <div className="px-4 py-10 text-center text-sm text-slate-500">
+              Belum ada hasil ujian yang masuk untuk filter ini.
+            </div>
+          ) : (
+            filteredResults.map((r) => {
+              const vioCount = getViolationHistoryForResult(r).length;
+              return (
+                <div key={`mob-res-${r.id}`} className="p-4 space-y-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="font-semibold text-sm text-slate-900 truncate">{r.namaSiswa}</p>
+                      <p className="text-xs text-slate-600 truncate">
+                        {r.kelas} &middot; {r.mataPelajaran}
+                      </p>
+                      <p className="text-[11px] text-slate-500 truncate mt-0.5">{r.judulUjian}</p>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <span className="font-mono-tabular text-lg font-bold text-slate-900">
+                        {r.nilaiAkhir}
+                      </span>
+                      <p className="font-mono-tabular text-[10px] text-slate-500">
+                        PG {r.skorPG} · Esai {r.skorEsai}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                    {r.status === 'Selesai' ? (
+                      <span className="inline-flex items-center gap-1 font-semibold text-emerald-700">
+                        <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+                        <span>Selesai (Normal)</span>
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 font-semibold text-red-700">
+                        <AlertOctagon className="h-3.5 w-3.5 shrink-0" />
+                        <span>Pelanggaran ({r.pelanggaranTab}x)</span>
+                      </span>
+                    )}
+                    <span className="font-mono-tabular text-[11px] text-slate-500">
+                      {new Date(r.waktuSubmit).toLocaleString('id-ID', {
+                        day: '2-digit',
+                        month: 'short',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => openEssayGrading(r)}
+                      className="btn-press min-h-[42px] flex-1 inline-flex items-center justify-center gap-1.5 rounded-xl border border-white/70 bg-white/65 px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-white"
+                    >
+                      <Edit3 className="h-3.5 w-3.5 text-emerald-700" />
+                      <span>
+                        {vioCount > 0 ? `Detail & Pelanggaran (${vioCount})` : 'Detail / Koreksi Esai'}
+                      </span>
+                    </button>
+                    {onDeleteResult && (
+                      <button
+                        type="button"
+                        onClick={() => onDeleteResult(r.id)}
+                        aria-label={`Hapus hasil ${r.namaSiswa}`}
+                        className="btn-press min-h-[42px] min-w-[42px] flex items-center justify-center rounded-xl border border-red-300/60 bg-red-500/10 text-red-600 hover:bg-red-500/20 shrink-0"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        {/* Tablet/Desktop Table */}
+        <div className="hidden md:block overflow-x-auto">
           <table className="w-full text-left text-sm">
             <thead className="border-b border-white/55 bg-white/40 backdrop-blur-sm text-xs font-semibold text-slate-600">
               <tr>

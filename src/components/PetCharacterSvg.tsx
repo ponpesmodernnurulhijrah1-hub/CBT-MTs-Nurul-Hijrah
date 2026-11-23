@@ -7,7 +7,7 @@ interface PetCharacterSvgProps {
   size?: number;
 }
 
-export const PetCharacterSvg: React.FC<PetCharacterSvgProps> = ({
+const PetCharacterSvgBase: React.FC<PetCharacterSvgProps> = ({
   petId,
   mood,
   size = 64,
@@ -358,3 +358,6 @@ export const PetCharacterSvg: React.FC<PetCharacterSvgProps> = ({
     </svg>
   );
 };
+
+export const PetCharacterSvg = React.memo(PetCharacterSvgBase);
+

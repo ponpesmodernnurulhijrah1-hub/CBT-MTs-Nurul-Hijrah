@@ -12,7 +12,8 @@ import {
   waitForPendingWrites,
   writeBatch,
 } from 'firebase/firestore';
-import { APP_VERSION, db } from '../config/firebase';
+import { db } from '../config/firebase';
+import { APP_BUILD_HASH, APP_SCHEMA_VERSION, APP_VERSION } from '../config/version';
 import type {
   AdminAccount,
   ClassItem,
@@ -419,14 +420,19 @@ async function executeSingleMutation(op: PendingSyncMutation): Promise<void> {
 
 async function waitForCloudAck(timeoutMs: number = 3500): Promise<boolean> {
   if (typeof navigator !== 'undefined' && !navigator.onLine) return false;
+  let timerId: ReturnType<typeof setTimeout> | null = null;
   try {
     await Promise.race([
       waitForPendingWrites(db),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('SYNC_ACK_TIMEOUT')), timeoutMs)),
+      new Promise((_, reject) => {
+        timerId = setTimeout(() => reject(new Error('SYNC_ACK_TIMEOUT')), timeoutMs);
+      }),
     ]);
     return true;
   } catch {
     return false;
+  } finally {
+    if (timerId !== null) clearTimeout(timerId);
   }
 }
 
@@ -463,6 +469,7 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
   const [syncError, setSyncError] = useState<string | null>(null);
   const [syncLogs, setSyncLogs] = useState<SyncLogEntry[]>(() => loadLocalSyncLogs());
   const [pulseAppVersion, setPulseAppVersion] = useState<string | null>(null);
+  const [pulseBuildHash, setPulseBuildHash] = useState<string | null>(null);
 
   const stateRef = useRef(state);
   stateRef.current = state;
@@ -488,6 +495,7 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
   const flushingQueueRef = useRef(false);
   const pendingColWritesRef = useRef<Record<string, boolean>>({});
   const remotePulseVersionRef = useRef<string | null>(null);
+  const remotePulseHashRef = useRef<string | null>(null);
   const pulseBootSyncedRef = useRef(false);
 
   const refreshPendingSnapshotFlag = useCallback(() => {
@@ -560,6 +568,7 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
             APP_VERSION,
             remotePulseVersionRef.current
           );
+          const canWriteLocalHash = !isNewerAppVersion(remotePulseVersionRef.current, APP_VERSION);
           void setDoc(doc(db, 'settings', 'cbt_sync_pulse'), {
             rev: entry.timestampMs,
             updatedAt: entry.timestamp,
@@ -569,6 +578,10 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
             collection: entry.collection,
             deviceId: entry.deviceId,
             appVersion: monotonicVersion,
+            buildHash: canWriteLocalHash
+              ? APP_BUILD_HASH
+              : remotePulseHashRef.current || APP_BUILD_HASH,
+            schemaVersion: APP_SCHEMA_VERSION,
           }).catch(() => {});
         }
       }
@@ -1207,6 +1220,8 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
                   summary: 'Sinkronisasi versi aplikasi aktif',
                   deviceId: deviceIdRef.current,
                   appVersion: APP_VERSION,
+                  buildHash: APP_BUILD_HASH,
+                  schemaVersion: APP_SCHEMA_VERSION,
                 },
                 { merge: true }
               ).catch(() => {});
@@ -1219,17 +1234,26 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
             actorName?: string;
             deviceId?: string;
             appVersion?: string;
+            buildHash?: string;
           };
           const remoteVer = data.appVersion ? String(data.appVersion).trim() : '';
+          const remoteHash = data.buildHash ? String(data.buildHash).trim() : '';
           if (remoteVer) {
             remotePulseVersionRef.current = remoteVer;
             setPulseAppVersion(remoteVer);
           }
-          // If this device runs a newer release than Firestore's recorded pulse, bump cloud pulse forward
-          // so every other installed PWA immediately receives the new version notification!
+          if (remoteHash) {
+            remotePulseHashRef.current = remoteHash;
+            setPulseBuildHash(remoteHash);
+          }
+          // If this device runs a newer release (or matching release missing buildHash) than Firestore's recorded pulse,
+          // bump cloud pulse forward so every other installed PWA immediately receives the new version & build hash!
           if (
             !pulseBootSyncedRef.current &&
-            (!remoteVer || isNewerAppVersion(APP_VERSION, remoteVer)) &&
+            (!remoteVer ||
+              isNewerAppVersion(APP_VERSION, remoteVer) ||
+              (remoteVer === APP_VERSION &&
+                (!remoteHash || (remoteHash === remoteVer && APP_BUILD_HASH !== APP_VERSION)))) &&
             (typeof navigator === 'undefined' || navigator.onLine)
           ) {
             pulseBootSyncedRef.current = true;
@@ -1242,6 +1266,8 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
                 summary: `Rilis versi aplikasi ${APP_VERSION}`,
                 deviceId: deviceIdRef.current,
                 appVersion: APP_VERSION,
+                buildHash: APP_BUILD_HASH,
+                schemaVersion: APP_SCHEMA_VERSION,
               },
               { merge: true }
             ).catch(() => {});
@@ -2243,6 +2269,8 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
     syncInfo,
     syncLogs,
     pulseAppVersion,
+    pulseBuildHash,
+    deviceId: deviceIdRef.current,
     forceSyncNow,
     isReady,
     addSubject,

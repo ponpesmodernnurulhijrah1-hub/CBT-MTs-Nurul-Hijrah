@@ -152,6 +152,10 @@ export const VirtualPetAssistant: React.FC<VirtualPetAssistantProps> = ({
   const lastEventRef = useRef<{ event: PetActivityEvent; atMs: number } | null>(null);
   const bubbleTimerRef = useRef<number | null>(null);
   const happyTimerRef = useRef<number | null>(null);
+  const particleTimersRef = useRef<Set<number>>(new Set());
+  const rafDragRef = useRef<number | null>(null);
+  const petWidgetRef = useRef<HTMLDivElement | null>(null);
+  const pendingDragPosRef = useRef<{ x: number; y: number }>(position);
   const particleIdRef = useRef(1);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -212,10 +216,12 @@ export const VirtualPetAssistant: React.FC<VirtualPetAssistantProps> = ({
       offsetX: Math.round((idx - (count - 1) / 2) * 16 + (Math.random() * 8 - 4)),
     }));
     setParticles((prev) => [...prev.slice(-8), ...batch]);
-    window.setTimeout(() => {
+    const timerId = window.setTimeout(() => {
+      particleTimersRef.current.delete(timerId);
       const ids = new Set(batch.map((b) => b.id));
       setParticles((prev) => prev.filter((p) => !ids.has(p.id)));
     }, 1100);
+    particleTimersRef.current.add(timerId);
   }, []);
 
   const triggerJoyfulReaction = useCallback(
@@ -282,8 +288,21 @@ export const VirtualPetAssistant: React.FC<VirtualPetAssistantProps> = ({
     }
   }, [activitySignal, petMeta.name, showBubble, spawnParticles]);
 
-  // Wake up on user interaction anywhere & compute real-time mood transitions (bored -> sleeping -> idle)
+  // Clean up all timers and animation frames on unmount
   useEffect(() => {
+    const particleTimers = particleTimersRef.current;
+    return () => {
+      if (bubbleTimerRef.current !== null) window.clearTimeout(bubbleTimerRef.current);
+      if (happyTimerRef.current !== null) window.clearTimeout(happyTimerRef.current);
+      if (rafDragRef.current !== null) window.cancelAnimationFrame(rafDragRef.current);
+      particleTimers.forEach((id) => window.clearTimeout(id));
+      particleTimers.clear();
+    };
+  }, []);
+
+  // Wake up on user interaction anywhere & compute real-time mood transitions (skipped while hidden)
+  useEffect(() => {
+    if (hidden) return;
     let lastMoveStamp = 0;
     const syncMoodNow = () => {
       const next = computePetMood({
@@ -295,7 +314,7 @@ export const VirtualPetAssistant: React.FC<VirtualPetAssistantProps> = ({
         lastEvent: lastEventRef.current?.event ?? null,
         lastEventAtMs: lastEventRef.current?.atMs ?? null,
       });
-      setCurrentMood(next);
+      setCurrentMood((prev) => (prev === next ? prev : next));
     };
 
     const markActivity = () => {
@@ -304,7 +323,7 @@ export const VirtualPetAssistant: React.FC<VirtualPetAssistantProps> = ({
     };
     const handlePointerMove = () => {
       const now = Date.now();
-      if (now - lastMoveStamp < 400) return;
+      if (now - lastMoveStamp < 1500) return;
       lastMoveStamp = now;
       markActivity();
     };
@@ -318,7 +337,7 @@ export const VirtualPetAssistant: React.FC<VirtualPetAssistantProps> = ({
     const interval = window.setInterval(() => {
       if (chatOpen || settingsOpen) return;
       syncMoodNow();
-    }, 1000);
+    }, 3000);
 
     return () => {
       window.removeEventListener('pointerdown', markActivity);
@@ -327,7 +346,7 @@ export const VirtualPetAssistant: React.FC<VirtualPetAssistantProps> = ({
       window.removeEventListener('pointermove', handlePointerMove);
       window.clearInterval(interval);
     };
-  }, [appContext.isExamLocked, chatOpen, isHappy, loading, settingsOpen]);
+  }, [appContext.isExamLocked, chatOpen, hidden, isHappy, loading, settingsOpen]);
 
   // Keep pet clamped inside viewport on browser resize using bottom-right affinity if saved
   useEffect(() => {
@@ -357,7 +376,7 @@ export const VirtualPetAssistant: React.FC<VirtualPetAssistantProps> = ({
     }
   }, [messages, loading, chatOpen]);
 
-  // Drag & drop pointer handling
+  // 60fps GPU-composited Drag & drop pointer handling (zero React re-renders while dragging)
   useEffect(() => {
     const handlePointerMove = (e: PointerEvent) => {
       const st = dragStateRef.current;
@@ -368,7 +387,7 @@ export const VirtualPetAssistant: React.FC<VirtualPetAssistantProps> = ({
         st.moved = true;
       }
       if (!st.moved) return;
-      const next = clampPetPosition(
+      pendingDragPosRef.current = clampPetPosition(
         st.originX + dx,
         st.originY + dy,
         window.innerWidth,
@@ -376,7 +395,15 @@ export const VirtualPetAssistant: React.FC<VirtualPetAssistantProps> = ({
         WIDGET_SIZE,
         18
       );
-      setPosition(next);
+      if (rafDragRef.current === null) {
+        rafDragRef.current = window.requestAnimationFrame(() => {
+          rafDragRef.current = null;
+          if (petWidgetRef.current) {
+            const { x, y } = pendingDragPosRef.current;
+            petWidgetRef.current.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+          }
+        });
+      }
     };
 
     const handlePointerUp = (e: PointerEvent) => {
@@ -386,33 +413,42 @@ export const VirtualPetAssistant: React.FC<VirtualPetAssistantProps> = ({
       st.active = false;
       st.pointerId = null;
 
+      if (rafDragRef.current !== null) {
+        window.cancelAnimationFrame(rafDragRef.current);
+        rafDragRef.current = null;
+      }
+
       if (wasDragged) {
-        setPosition((latest) => {
-          try {
-            const right = Math.max(16, window.innerWidth - WIDGET_SIZE - latest.x);
-            const bottom = Math.max(24, window.innerHeight - WIDGET_SIZE - latest.y);
-            localStorage.setItem(PET_OFFSET_KEY, JSON.stringify({ right, bottom }));
-          } catch {
-            // Ignore
-          }
-          return latest;
-        });
+        const latest = pendingDragPosRef.current;
+        setPosition(latest);
+        try {
+          const right = Math.max(16, window.innerWidth - WIDGET_SIZE - latest.x);
+          const bottom = Math.max(24, window.innerHeight - WIDGET_SIZE - latest.y);
+          localStorage.setItem(PET_OFFSET_KEY, JSON.stringify({ right, bottom }));
+        } catch {
+          // Ignore
+        }
       }
     };
 
-    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointermove', handlePointerMove, { passive: true });
     window.addEventListener('pointerup', handlePointerUp);
     window.addEventListener('pointercancel', handlePointerUp);
     return () => {
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
       window.removeEventListener('pointercancel', handlePointerUp);
+      if (rafDragRef.current !== null) {
+        window.cancelAnimationFrame(rafDragRef.current);
+        rafDragRef.current = null;
+      }
     };
   }, []);
 
   const handleAvatarPointerDown = (e: React.PointerEvent<HTMLButtonElement>) => {
     if (e.button !== 0 && e.pointerType === 'mouse') return;
     lastActivityRef.current = Date.now();
+    pendingDragPosRef.current = position;
     dragStateRef.current = {
       active: true,
       pointerId: e.pointerId,
@@ -597,8 +633,9 @@ export const VirtualPetAssistant: React.FC<VirtualPetAssistantProps> = ({
       {/* Floating Draggable Virtual Pet Widget (smoothly concealed while chat drawer is open) */}
       {!chatOpen && (
         <div
+          ref={petWidgetRef}
           style={{ transform: `translate3d(${position.x}px, ${position.y}px, 0)` }}
-          className="fixed left-0 top-0 z-40 w-[92px] h-[92px] select-none"
+          className="fixed left-0 top-0 z-40 w-[92px] h-[92px] select-none will-change-transform"
         >
           {/* Animated Floating Hearts & Stars */}
           <div
@@ -669,7 +706,7 @@ export const VirtualPetAssistant: React.FC<VirtualPetAssistantProps> = ({
                         setSettingsOpen(false);
                         triggerJoyfulReaction(`Hai! Aku ${item.name}, ${item.speciesLabel}!`);
                       }}
-                      className={`btn-press flex flex-col items-center rounded-xl border p-2 text-center transition-all ${
+                      className={`btn-press flex flex-col items-center rounded-xl border p-2 text-center transition-colors ${
                         active
                           ? 'border-emerald-500/70 bg-emerald-500/15 text-emerald-950 font-bold'
                           : 'border-slate-200/80 bg-white/75 text-slate-700 hover:bg-white'
@@ -753,7 +790,7 @@ export const VirtualPetAssistant: React.FC<VirtualPetAssistantProps> = ({
             data-mood={currentMood}
             title={moodMeta.statusHint}
             aria-label={`Mood hewan: ${moodMeta.label}`}
-            className={`pointer-events-none mx-auto -mt-1 flex w-max max-w-[104px] items-center justify-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-bold shadow-xs backdrop-blur-md transition-all duration-300 ${moodMeta.pillTone}`}
+            className={`pointer-events-none mx-auto -mt-1 flex w-max max-w-[104px] items-center justify-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-bold shadow-xs backdrop-blur-md transition-colors duration-300 ${moodMeta.pillTone}`}
           >
             <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${moodMeta.dotColor} ${currentMood === 'proud' ? 'animate-ping' : ''}`} />
             <span className="truncate">{moodMeta.label}</span>
@@ -832,7 +869,7 @@ export const VirtualPetAssistant: React.FC<VirtualPetAssistantProps> = ({
                       updatePetCharacter(item.id);
                       triggerJoyfulReaction(`Halo! Sekarang aku ${item.name}!`);
                     }}
-                    className={`btn-press flex items-center justify-center gap-1 rounded-xl border px-2 py-1 text-[11px] font-semibold transition-all whitespace-nowrap ${
+                    className={`btn-press flex items-center justify-center gap-1 rounded-xl border px-2 py-1 text-[11px] font-semibold transition-colors whitespace-nowrap ${
                       active
                         ? 'border-emerald-500/60 bg-emerald-700 text-white shadow-xs'
                         : 'border-white/70 bg-white/60 text-slate-700 hover:bg-white'

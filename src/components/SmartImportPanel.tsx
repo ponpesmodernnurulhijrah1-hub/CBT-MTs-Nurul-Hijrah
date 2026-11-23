@@ -1,7 +1,4 @@
 import React, { useRef, useState } from 'react';
-import * as mammoth from 'mammoth';
-import * as pdfjsLib from 'pdfjs-dist';
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import {
   UploadCloud,
   Sparkles,
@@ -20,11 +17,6 @@ import {
 import type { Question, QuestionType } from '../types/cbt';
 import { parseRichHtmlQuestions, type ParsedQuestionDraft } from '../utils/questionParser';
 import { getOptionLetter } from '../utils/examLogic';
-
-// Use locally bundled PDF.js worker so extraction never depends on external CDN availability
-if (typeof window !== 'undefined' && pdfjsLib.GlobalWorkerOptions) {
-  pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
-}
 
 interface SmartImportPanelProps {
   subjects: string[];
@@ -71,6 +63,13 @@ async function extractPdfContentWithVisionFallback(
   buffer: ArrayBuffer,
   baseName: string
 ): Promise<{ html: string; visionImages: AttachedVisionImage[] }> {
+  const [pdfjsLib, workerModule] = await Promise.all([
+    import('pdfjs-dist'),
+    import('pdfjs-dist/build/pdf.worker.min.mjs?url'),
+  ]);
+  if (typeof window !== 'undefined' && pdfjsLib.GlobalWorkerOptions) {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = workerModule.default;
+  }
   const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise;
   let combinedHtml = '';
   let totalPlainChars = 0;
@@ -186,7 +185,7 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
           setFileName((prev) => (prev ? `${prev}, ${file.name}` : file.name));
         } else if (ext === 'docx') {
           setFileName(file.name);
-          const buffer = await file.arrayBuffer();
+          const [buffer, mammoth] = await Promise.all([file.arrayBuffer(), import('mammoth')]);
           const result = await mammoth.convertToHtml(
             { arrayBuffer: buffer },
             {
@@ -466,7 +465,7 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
               <button
                 type="button"
                 onClick={() => setStudioMode('extract')}
-                className={`btn-press inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold transition-all whitespace-nowrap shrink-0 ${
+                className={`btn-press inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
                   studioMode === 'extract'
                     ? 'bg-white/85 text-emerald-800 shadow-sm'
                     : 'text-slate-600 hover:text-slate-900 hover:bg-white/40'
@@ -478,7 +477,7 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
               <button
                 type="button"
                 onClick={() => setStudioMode('generate')}
-                className={`btn-press inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold transition-all whitespace-nowrap shrink-0 ${
+                className={`btn-press inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
                   studioMode === 'generate'
                     ? 'bg-white/85 text-emerald-800 shadow-sm'
                     : 'text-slate-600 hover:text-slate-900 hover:bg-white/40'

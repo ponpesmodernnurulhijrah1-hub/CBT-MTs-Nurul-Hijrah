@@ -1,13 +1,19 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
-import { RefreshCw, WifiOff } from 'lucide-react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Cpu, RefreshCw, WifiOff } from 'lucide-react';
 import type { AdminAccount, ExamResult, TeacherAccount, UserRole } from './types/cbt';
 import { useCbtStore } from './hooks/useCbtStore';
 import { useAppUpdater } from './hooks/useAppUpdater';
+import { usePWAInstall } from './hooks/usePWAInstall';
 import { TopBar } from './components/TopBar';
 import { StudentPortal } from './components/StudentPortal';
 import { VirtualPetAssistant, type PetActivitySignal } from './components/VirtualPetAssistant';
 import { exportExamResultsToExcel } from './utils/exportHelpers';
 import { getTeacherSubjects } from './utils/storeSyncUtils';
+import {
+  SW_HEARTBEAT_INTERVAL_MS,
+  shouldSoftReloadFromSwHeartbeat,
+} from './utils/updaterLogic';
+import { syncDocumentDeviceAttributes } from './utils/deviceViewport';
 import type { TeacherTab } from './components/TeacherTutorAssistant';
 import type { AdminTab } from './components/AdminPortal';
 import type { PetActivityEvent, PetAppContextSummary, PetClientAction } from './utils/virtualPetUtils';
@@ -25,6 +31,11 @@ const TeacherPortal = lazy(() =>
 );
 const AdminPortal = lazy(() =>
   import('./components/AdminPortal').then((m) => ({ default: m.AdminPortal }))
+);
+const VersionDiagnosticModal = lazy(() =>
+  import('./components/VersionDiagnosticModal').then((m) => ({
+    default: m.VersionDiagnosticModal,
+  }))
 );
 
 const PortalLoader = () => (
@@ -52,6 +63,7 @@ export default function App() {
   const [activeRole, setActiveRole] = useState<UserRole>('siswa');
   const [isExamLocked, setIsExamLocked] = useState(false);
   const [qrModalOpen, setQrModalOpen] = useState(false);
+  const [diagModalOpen, setDiagModalOpen] = useState(false);
   const [loggedTeacher, setLoggedTeacher] = useState<TeacherAccount | null>(null);
   const [loggedAdmin, setLoggedAdmin] = useState<AdminAccount | null>(null);
   const [teacherTab, setTeacherTab] = useState<TeacherTab>('analitik');
@@ -83,9 +95,190 @@ export default function App() {
     isReloading,
     isCheckingUpdate,
     currentVersion,
+    currentBuildHash,
+    diagnostics,
+    refreshDiagnostics,
     checkAndApplyUpdateNow,
-  } = useAppUpdater(isExamLocked, store.pulseAppVersion);
+    forceHardResetAndReload,
+  } = useAppUpdater(isExamLocked, store.pulseAppVersion, store.pulseBuildHash);
+  const pwaInstall = usePWAInstall();
   const [updateCheckStatus, setUpdateCheckStatus] = useState<string | null>(null);
+  const statusClearTimerRef = useRef<number | null>(null);
+  const isExamLockedRef = useRef(isExamLocked);
+  const pendingHeartbeatReloadRef = useRef<{ swVersion?: string; swBuildHash?: string } | null>(null);
+
+  useEffect(() => {
+    isExamLockedRef.current = isExamLocked;
+    if (!isExamLocked && pendingHeartbeatReloadRef.current) {
+      pendingHeartbeatReloadRef.current = null;
+      void checkAndApplyUpdateNow(true);
+    }
+  }, [isExamLocked, checkAndApplyUpdateNow]);
+
+  // 30-minute Service Worker version heartbeat via navigator.serviceWorker.controller.postMessage
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('serviceWorker' in navigator)) return;
+
+    let cancelled = false;
+    const activeTimeouts = new Set<number>();
+    const activePorts = new Set<MessagePort>();
+
+    const handleHeartbeatMismatch = (swVersion?: string, swBuildHash?: string) => {
+      if (cancelled) return;
+      let alreadyReloadedForSwHash: string | null = null;
+      if (swBuildHash) {
+        try {
+          alreadyReloadedForSwHash = window.sessionStorage.getItem(
+            `cbt_sw_heartbeat_reloaded_${swBuildHash}`
+          );
+        } catch {
+          // Ignore sessionStorage restrictions
+        }
+      }
+
+      const mismatch = shouldSoftReloadFromSwHeartbeat({
+        clientVersion: currentVersion,
+        clientBuildHash: currentBuildHash,
+        swVersion,
+        swBuildHash,
+        alreadyReloadedForSwHash,
+      });
+      if (!mismatch) return;
+
+      if (swBuildHash) {
+        try {
+          window.sessionStorage.setItem(`cbt_sw_heartbeat_reloaded_${swBuildHash}`, '1');
+        } catch {
+          // Ignore sessionStorage restrictions
+        }
+      }
+
+      if (isExamLockedRef.current) {
+        pendingHeartbeatReloadRef.current = { swVersion, swBuildHash };
+        return;
+      }
+
+      void checkAndApplyUpdateNow(true);
+    };
+
+    const pingServiceWorkerHeartbeat = () => {
+      if (cancelled) return;
+      const controller = navigator.serviceWorker.controller;
+      if (!controller) return;
+
+      try {
+        const channel = new MessageChannel();
+        activePorts.add(channel.port1);
+
+        const timeoutId = window.setTimeout(() => {
+          activeTimeouts.delete(timeoutId);
+          activePorts.delete(channel.port1);
+          try {
+            channel.port1.close();
+          } catch {
+            // Ignore close errors
+          }
+        }, 3000);
+        activeTimeouts.add(timeoutId);
+
+        channel.port1.onmessage = (event: MessageEvent) => {
+          window.clearTimeout(timeoutId);
+          activeTimeouts.delete(timeoutId);
+          activePorts.delete(channel.port1);
+          try {
+            channel.port1.close();
+          } catch {
+            // Ignore close errors
+          }
+
+          const data = event.data as {
+            type?: string;
+            version?: string;
+            buildHash?: string;
+          } | null;
+          if (!data || data.type !== 'VERSION_HEARTBEAT_REPLY') return;
+          handleHeartbeatMismatch(
+            typeof data.version === 'string' ? data.version : undefined,
+            typeof data.buildHash === 'string' ? data.buildHash : undefined
+          );
+        };
+
+        controller.postMessage(
+          {
+            type: 'PING_VERSION_HEARTBEAT',
+            clientVersion: currentVersion,
+            clientBuildHash: currentBuildHash,
+          },
+          [channel.port2]
+        );
+      } catch {
+        // Ignore postMessage failures when SW is transitioning
+      }
+    };
+
+    const heartbeatIntervalId = window.setInterval(
+      pingServiceWorkerHeartbeat,
+      SW_HEARTBEAT_INTERVAL_MS
+    );
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(heartbeatIntervalId);
+      activeTimeouts.forEach((id) => window.clearTimeout(id));
+      activeTimeouts.clear();
+      activePorts.forEach((port) => {
+        try {
+          port.close();
+        } catch {
+          // Ignore close errors
+        }
+      });
+      activePorts.clear();
+    };
+  }, [currentVersion, currentBuildHash, checkAndApplyUpdateNow]);
+
+  useEffect(() => {
+    return () => {
+      if (statusClearTimerRef.current !== null) {
+        window.clearTimeout(statusClearTimerRef.current);
+      }
+    };
+  }, []);
+
+  // Dynamically synchronize responsive viewport meta & device attributes on installed PWAs
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    let rafId: number | null = null;
+    const handleViewportSync = () => {
+      if (rafId !== null) window.cancelAnimationFrame(rafId);
+      rafId = window.requestAnimationFrame(() => {
+        rafId = null;
+        syncDocumentDeviceAttributes();
+      });
+    };
+
+    syncDocumentDeviceAttributes();
+    window.addEventListener('resize', handleViewportSync, { passive: true });
+    window.addEventListener('orientationchange', handleViewportSync, { passive: true });
+    window.addEventListener('pageshow', handleViewportSync, { passive: true });
+    window.visualViewport?.addEventListener('resize', handleViewportSync);
+
+    const standaloneMq = window.matchMedia?.('(display-mode: standalone)');
+    if (standaloneMq?.addEventListener) {
+      standaloneMq.addEventListener('change', handleViewportSync);
+    }
+
+    return () => {
+      if (rafId !== null) window.cancelAnimationFrame(rafId);
+      window.removeEventListener('resize', handleViewportSync);
+      window.removeEventListener('orientationchange', handleViewportSync);
+      window.removeEventListener('pageshow', handleViewportSync);
+      window.visualViewport?.removeEventListener('resize', handleViewportSync);
+      if (standaloneMq?.removeEventListener) {
+        standaloneMq.removeEventListener('change', handleViewportSync);
+      }
+    };
+  }, []);
 
   // Live sync logged-in Teacher & Admin accounts with remote Firestore changes
   useEffect(() => {
@@ -325,26 +518,29 @@ export default function App() {
   );
 
   return (
-    <div className="ios-mesh-bg min-h-screen text-slate-900 flex flex-col relative overflow-x-clip">
-      {/* Subtle ambient depth orbs behind glass layers (non-interactive, compositor-safe) */}
+    <div className="ios-mesh-bg min-h-[100dvh] w-full max-w-full text-slate-900 flex flex-col relative overflow-x-clip">
+      {/* Compositor-only fixed pastel mesh backdrop (zero blur-3xl GPU passes & zero scroll repaint) */}
       <div
         aria-hidden="true"
-        className="pointer-events-none fixed inset-0 z-0 overflow-hidden no-print"
-      >
-        <div className="absolute -top-28 -left-24 h-96 w-96 rounded-full bg-emerald-200/45 blur-3xl" />
-        <div className="absolute top-12 -right-24 h-[28rem] w-[28rem] rounded-full bg-sky-200/50 blur-3xl" />
-        <div className="absolute bottom-[-6rem] left-1/3 h-96 w-96 rounded-full bg-indigo-200/40 blur-3xl" />
-      </div>
+        className="ios-mesh-backdrop pointer-events-none fixed inset-0 z-0 no-print"
+      />
 
       {/* Auto-update notification banner (defers reload while student is actively taking exam) */}
       {updateAvailable && (
-        <div className="relative z-40 bg-emerald-900/90 backdrop-blur-md border-b border-white/20 px-4 py-2 text-center text-xs font-semibold text-white flex items-center justify-center gap-2 no-print">
+        <div className="relative z-40 bg-emerald-900/90 backdrop-blur-md border-b border-white/20 px-4 py-2 text-center text-xs font-semibold text-white flex flex-wrap items-center justify-center gap-2 no-print">
           <RefreshCw className={`h-3.5 w-3.5 ${isReloading ? 'animate-spin' : ''}`} />
           <span>
             {isReloading
               ? 'Memperbarui aplikasi ke versi terbaru...'
               : 'Pembaruan aplikasi tersedia — akan diterapkan otomatis setelah ujian Anda selesai.'}
           </span>
+          <button
+            type="button"
+            onClick={() => setDiagModalOpen(true)}
+            className="btn-press rounded-lg border border-white/30 bg-white/15 px-2.5 py-0.5 text-[11px] font-bold text-white hover:bg-white/25 whitespace-nowrap"
+          >
+            Diagnostik Versi
+          </button>
         </div>
       )}
 
@@ -362,6 +558,10 @@ export default function App() {
           if (!isExamLocked) setActiveRole(role);
         }}
         onOpenQRInstall={() => setQrModalOpen(true)}
+        canDirectInstall={pwaInstall.isInstallable && !pwaInstall.isInstalled}
+        onDirectInstall={() => {
+          void pwaInstall.install();
+        }}
         isExamLocked={isExamLocked}
         syncInfo={loggedTeacher || loggedAdmin ? store.syncInfo : undefined}
         onForceSync={store.forceSyncNow}
@@ -369,119 +569,126 @@ export default function App() {
 
       <div className="relative z-10 flex-1">
         {activeRole === 'siswa' && (
-          <StudentPortal
-            classes={store.classes}
-            exams={store.exams}
-            cloudConnected={store.cloudConnected}
-            onExamActiveChange={(locked) => {
-              setIsExamLocked(locked);
-              if (locked) emitPetActivity('exam_started');
-            }}
-            onSubmitExamResult={async (payload) => {
-              await store.submitExamResult(payload);
-              if (payload.status === 'Selesai') {
-                emitPetActivity(
-                  'exam_submitted_normal',
-                  `Yeay! ${payload.namaSiswa} menyelesaikan ujian ${payload.mataPelajaran} — Bangga banget!`
-                );
-              } else {
-                emitPetActivity(
-                  'exam_submitted_violation',
-                  `Ujian ${payload.namaSiswa} terkumpul otomatis karena pelanggaran.`
-                );
-              }
-            }}
-            onUpsertLiveStream={store.upsertLiveStream}
-            onDeleteLiveStream={store.deleteLiveStream}
-            onOpenQRInstall={() => setQrModalOpen(true)}
-            externalPrefill={studentPrefill}
-          />
+          <div key="siswa" className="portal-transition-enter" data-portal-view="siswa">
+            <StudentPortal
+              classes={store.classes}
+              exams={store.exams}
+              cloudConnected={store.cloudConnected}
+              onExamActiveChange={(locked) => {
+                setIsExamLocked(locked);
+                if (locked) emitPetActivity('exam_started');
+              }}
+              onSubmitExamResult={async (payload) => {
+                await store.submitExamResult(payload);
+                if (payload.status === 'Selesai') {
+                  emitPetActivity(
+                    'exam_submitted_normal',
+                    `Yeay! ${payload.namaSiswa} menyelesaikan ujian ${payload.mataPelajaran} — Bangga banget!`
+                  );
+                } else {
+                  emitPetActivity(
+                    'exam_submitted_violation',
+                    `Ujian ${payload.namaSiswa} terkumpul otomatis karena pelanggaran.`
+                  );
+                }
+              }}
+              onUpsertLiveStream={store.upsertLiveStream}
+              onDeleteLiveStream={store.deleteLiveStream}
+              onOpenQRInstall={() => setQrModalOpen(true)}
+              externalPrefill={studentPrefill}
+            />
+          </div>
         )}
 
         {activeRole === 'guru' && (
           <Suspense fallback={<PortalLoader />}>
-            <TeacherPortal
-              loggedTeacher={loggedTeacher}
-              onSetLoggedTeacher={setLoggedTeacher}
-              subjects={store.subjects}
-              classes={store.classes}
-              questions={store.questions}
-              exams={store.exams}
-              results={store.results}
-              liveStreams={store.liveStreams}
-              onAuthenticate={store.authenticateTeacher}
-              onAddQuestion={store.addQuestion}
-              onAddQuestionsBatch={store.addQuestionsBatch}
-              onUpdateQuestion={store.updateQuestion}
-              onDeleteQuestion={store.deleteQuestion}
-              onDeleteQuestionsBatch={store.deleteQuestionsBatch}
-              onClearBankBySubject={store.clearBankBySubject}
-              onSaveExam={store.saveExamSchedule}
-              onToggleExamActive={store.toggleExamActive}
-              onDeleteExam={store.deleteExamSchedule}
-              onSendProctorWarning={store.sendProctorWarning}
-              onUpdateEssayScore={store.updateResultEssayScore}
-              activeTab={teacherTab}
-              onActiveTabChange={setTeacherTab}
-              externalCreateQuestionSignal={externalCreateQuestionSignal}
-              onOpenGoogleSheets={openGoogleSheetsModal}
-              syncInfo={store.syncInfo}
-              onForceSync={store.forceSyncNow}
-            />
+            <div key="guru" className="portal-transition-enter" data-portal-view="guru">
+              <TeacherPortal
+                loggedTeacher={loggedTeacher}
+                onSetLoggedTeacher={setLoggedTeacher}
+                subjects={store.subjects}
+                classes={store.classes}
+                questions={store.questions}
+                exams={store.exams}
+                results={store.results}
+                liveStreams={store.liveStreams}
+                onAuthenticate={store.authenticateTeacher}
+                onAddQuestion={store.addQuestion}
+                onAddQuestionsBatch={store.addQuestionsBatch}
+                onUpdateQuestion={store.updateQuestion}
+                onDeleteQuestion={store.deleteQuestion}
+                onDeleteQuestionsBatch={store.deleteQuestionsBatch}
+                onClearBankBySubject={store.clearBankBySubject}
+                onSaveExam={store.saveExamSchedule}
+                onToggleExamActive={store.toggleExamActive}
+                onDeleteExam={store.deleteExamSchedule}
+                onSendProctorWarning={store.sendProctorWarning}
+                onUpdateEssayScore={store.updateResultEssayScore}
+                activeTab={teacherTab}
+                onActiveTabChange={setTeacherTab}
+                externalCreateQuestionSignal={externalCreateQuestionSignal}
+                onOpenGoogleSheets={openGoogleSheetsModal}
+                syncInfo={store.syncInfo}
+                onForceSync={store.forceSyncNow}
+              />
+            </div>
           </Suspense>
         )}
 
         {activeRole === 'admin' && (
           <Suspense fallback={<PortalLoader />}>
-            <AdminPortal
-              loggedAdmin={loggedAdmin}
-              onSetLoggedAdmin={setLoggedAdmin}
-              subjects={store.subjects}
-              classes={store.classes}
-              teachers={store.teachers}
-              questions={store.questions}
-              exams={store.exams}
-              results={store.results}
-              liveStreams={store.liveStreams}
-              onAuthenticate={store.authenticateAdmin}
-              onAddSubject={store.addSubject}
-              onUpdateSubject={store.updateSubject}
-              onDeleteSubject={store.deleteSubject}
-              onAddClass={store.addClass}
-              onUpdateClass={store.updateClass}
-              onDeleteClass={store.deleteClass}
-              onAddTeacher={store.addTeacher}
-              onUpdateTeacher={store.updateTeacher}
-              onDeleteTeacher={store.deleteTeacher}
-              onAddQuestion={store.addQuestion}
-              onAddQuestionsBatch={store.addQuestionsBatch}
-              onUpdateQuestion={store.updateQuestion}
-              onDeleteQuestion={store.deleteQuestion}
-              onDeleteQuestionsBatch={store.deleteQuestionsBatch}
-              onClearBankBySubject={store.clearBankBySubject}
-              onSaveExam={store.saveExamSchedule}
-              onToggleExamActive={store.toggleExamActive}
-              onDeleteExam={store.deleteExamSchedule}
-              onSendProctorWarning={store.sendProctorWarning}
-              onUpdateEssayScore={store.updateResultEssayScore}
-              onDeleteResult={store.deleteExamResult}
-              activeTab={adminTab}
-              onActiveTabChange={setAdminTab}
-              onOpenGoogleSheets={openGoogleSheetsModal}
-              syncInfo={store.syncInfo}
-              syncLogs={store.syncLogs}
-              onForceSync={store.forceSyncNow}
-            />
+            <div key="admin" className="portal-transition-enter" data-portal-view="admin">
+              <AdminPortal
+                loggedAdmin={loggedAdmin}
+                onSetLoggedAdmin={setLoggedAdmin}
+                subjects={store.subjects}
+                classes={store.classes}
+                teachers={store.teachers}
+                questions={store.questions}
+                exams={store.exams}
+                results={store.results}
+                liveStreams={store.liveStreams}
+                onAuthenticate={store.authenticateAdmin}
+                onAddSubject={store.addSubject}
+                onUpdateSubject={store.updateSubject}
+                onDeleteSubject={store.deleteSubject}
+                onAddClass={store.addClass}
+                onUpdateClass={store.updateClass}
+                onDeleteClass={store.deleteClass}
+                onAddTeacher={store.addTeacher}
+                onUpdateTeacher={store.updateTeacher}
+                onDeleteTeacher={store.deleteTeacher}
+                onAddQuestion={store.addQuestion}
+                onAddQuestionsBatch={store.addQuestionsBatch}
+                onUpdateQuestion={store.updateQuestion}
+                onDeleteQuestion={store.deleteQuestion}
+                onDeleteQuestionsBatch={store.deleteQuestionsBatch}
+                onClearBankBySubject={store.clearBankBySubject}
+                onSaveExam={store.saveExamSchedule}
+                onToggleExamActive={store.toggleExamActive}
+                onDeleteExam={store.deleteExamSchedule}
+                onSendProctorWarning={store.sendProctorWarning}
+                onUpdateEssayScore={store.updateResultEssayScore}
+                onDeleteResult={store.deleteExamResult}
+                activeTab={adminTab}
+                onActiveTabChange={setAdminTab}
+                onOpenGoogleSheets={openGoogleSheetsModal}
+                syncInfo={store.syncInfo}
+                syncLogs={store.syncLogs}
+                onForceSync={store.forceSyncNow}
+                onOpenDiagnostics={() => setDiagModalOpen(true)}
+              />
+            </div>
           </Suspense>
         )}
       </div>
 
-      <footer className="relative z-10 border-t border-white/45 bg-white/30 backdrop-blur-md px-6 py-4 text-center text-xs font-medium text-slate-600 no-print">
-        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-center gap-x-3 gap-y-1.5">
+      <footer className="relative z-10 border-t border-white/45 bg-white/30 backdrop-blur-md px-4 sm:px-6 pt-4 pb-24 sm:pb-20 lg:pb-5 text-center text-xs font-medium text-slate-600 no-print">
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-center gap-x-3 gap-y-2">
           <span>CBT MTs Nurul Hijrah &middot; Sistem Evaluasi Digital Terpadu</span>
           <span className="text-slate-400">&middot;</span>
           <span className="font-mono-tabular font-semibold text-slate-700">
-            v{currentVersion}
+            v{currentVersion} &middot; #{currentBuildHash.slice(0, 8)}
           </span>
           {!isExamLocked && (
             <button
@@ -491,16 +698,31 @@ export default function App() {
                 const status = await checkAndApplyUpdateNow(false);
                 if (status === 'up-to-date') {
                   setUpdateCheckStatus('Sudah versi terbaru');
-                  window.setTimeout(() => setUpdateCheckStatus(null), 3500);
+                  if (statusClearTimerRef.current !== null) {
+                    window.clearTimeout(statusClearTimerRef.current);
+                  }
+                  statusClearTimerRef.current = window.setTimeout(() => {
+                    statusClearTimerRef.current = null;
+                    setUpdateCheckStatus(null);
+                  }, 3500);
                 }
               }}
               disabled={isCheckingUpdate}
-              className="btn-press inline-flex items-center gap-1 rounded-lg border border-white/65 bg-white/55 px-2.5 py-1 text-[11px] font-semibold text-emerald-800 hover:bg-white/85 disabled:opacity-60"
+              className="btn-press min-h-[36px] inline-flex items-center gap-1.5 rounded-xl border border-white/65 bg-white/60 px-3 py-1.5 text-[11px] font-semibold text-emerald-800 hover:bg-white/90 disabled:opacity-60 whitespace-nowrap"
             >
               <RefreshCw className={`h-3 w-3 ${isCheckingUpdate ? 'animate-spin' : ''}`} />
               <span>{updateCheckStatus || 'Cek Pembaruan'}</span>
             </button>
           )}
+          <button
+            type="button"
+            onClick={() => setDiagModalOpen(true)}
+            data-testid="open-version-diagnostics-btn"
+            className="btn-press min-h-[36px] inline-flex items-center gap-1.5 rounded-xl border border-white/65 bg-white/60 px-3 py-1.5 text-[11px] font-semibold text-slate-700 hover:bg-white/90 whitespace-nowrap"
+          >
+            <Cpu className="h-3 w-3 text-emerald-700" />
+            <span>Diagnostik Hash</span>
+          </button>
         </div>
       </footer>
 
@@ -516,7 +738,23 @@ export default function App() {
             open={qrModalOpen}
             onClose={() => setQrModalOpen(false)}
             onForceUpdateApp={() => checkAndApplyUpdateNow(true)}
+            onOpenDiagnostics={() => setDiagModalOpen(true)}
             isCheckingUpdate={isCheckingUpdate}
+          />
+        </Suspense>
+      )}
+
+      {diagModalOpen && (
+        <Suspense fallback={null}>
+          <VersionDiagnosticModal
+            open={diagModalOpen}
+            onClose={() => setDiagModalOpen(false)}
+            diagnostics={diagnostics}
+            deviceId={store.deviceId}
+            isExamLocked={isExamLocked}
+            isChecking={isCheckingUpdate}
+            onRefreshDiagnostics={refreshDiagnostics}
+            onForceHardReset={forceHardResetAndReload}
           />
         </Suspense>
       )}

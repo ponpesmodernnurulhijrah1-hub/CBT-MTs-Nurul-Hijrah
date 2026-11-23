@@ -38,12 +38,19 @@ import type {
   SyncStatusInfo,
   TeacherAccount,
 } from '../types/cbt';
-import { BankSoalPanel } from './BankSoalPanel';
-import { JadwalTesPanel } from './JadwalTesPanel';
-import { LiveMonitoringGrid } from './LiveMonitoringGrid';
 import { SyncStatusIndicator } from './SyncStatusIndicator';
 import { printPrivacySafeTeacherDirectory } from '../utils/exportHelpers';
 import { getTeacherSubjects } from '../utils/storeSyncUtils';
+
+const BankSoalPanel = lazy(() =>
+  import('./BankSoalPanel').then((m) => ({ default: m.BankSoalPanel }))
+);
+const JadwalTesPanel = lazy(() =>
+  import('./JadwalTesPanel').then((m) => ({ default: m.JadwalTesPanel }))
+);
+const LiveMonitoringGrid = lazy(() =>
+  import('./LiveMonitoringGrid').then((m) => ({ default: m.LiveMonitoringGrid }))
+);
 
 const TeacherAnalytics = lazy(() =>
   import('./TeacherAnalytics').then((m) => ({ default: m.TeacherAnalytics }))
@@ -129,6 +136,7 @@ interface AdminPortalProps {
   syncInfo: SyncStatusInfo;
   syncLogs?: SyncLogEntry[];
   onForceSync?: () => Promise<void>;
+  onOpenDiagnostics?: () => void;
 }
 
 export const AdminPortal: React.FC<AdminPortalProps> = ({
@@ -169,6 +177,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   syncInfo,
   syncLogs = [],
   onForceSync,
+  onOpenDiagnostics,
 }) => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -491,30 +500,42 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     : [];
 
   return (
-    <div className="mx-auto flex max-w-7xl flex-col lg:flex-row gap-6 px-4 sm:px-6 py-6 panel-enter">
-      {/* Executive Dark Glass Sidebar */}
-      <aside className="w-full lg:w-64 shrink-0 space-y-4">
+    <div className="mx-auto flex max-w-7xl flex-col lg:flex-row gap-4 lg:gap-6 px-3.5 sm:px-6 py-4 sm:py-6 panel-enter">
+      {/* Executive Dark Glass Sidebar (Compact on Phone/Tablet, Sticky Rail on Laptop/Desktop) */}
+      <aside className="w-full lg:w-64 shrink-0 space-y-3 lg:space-y-4 lg:sticky lg:top-20 lg:self-start">
         <div className="glass-dark rounded-3xl p-4 text-white">
-          <div className="flex items-center gap-3">
-            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-500/20 border border-emerald-400/35 text-emerald-300">
-              <Shield className="h-5 w-5" />
-            </span>
-            <div className="min-w-0">
-              <p className="text-[11px] font-semibold uppercase tracking-wider text-emerald-300">
-                Super Admin
-              </p>
-              <h2 className="font-display text-[13px] sm:text-sm font-bold leading-tight break-words">
-                {loggedAdmin.nama}
-              </h2>
-              <p className="truncate text-xs text-slate-300">Kendali Penuh Server</p>
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-500/20 border border-emerald-400/35 text-emerald-300">
+                <Shield className="h-5 w-5" />
+              </span>
+              <div className="min-w-0">
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-emerald-300">
+                  Super Admin
+                </p>
+                <h2 className="font-display text-[13px] sm:text-sm font-bold leading-tight truncate">
+                  {loggedAdmin.nama}
+                </h2>
+                <p className="truncate text-xs text-slate-300">Kendali Penuh Server</p>
+              </div>
             </div>
+
+            <button
+              type="button"
+              onClick={() => onSetLoggedAdmin(null)}
+              aria-label="Keluar Admin"
+              className="btn-press lg:hidden min-h-[40px] inline-flex items-center gap-1.5 rounded-xl border border-white/20 bg-white/10 px-3 py-1.5 text-xs font-semibold text-white hover:bg-white/20 shrink-0"
+            >
+              <LogOut className="h-3.5 w-3.5" />
+              <span>Keluar</span>
+            </button>
           </div>
 
-          <div className="mt-4 grid grid-cols-2 gap-2 border-t border-white/15 pt-3 text-left">
+          <div className="mt-3 grid grid-cols-2 gap-2 border-t border-white/15 pt-3 text-left">
             <button
               type="button"
               onClick={() => setActiveTab('bank-jadwal')}
-              className="btn-press rounded-xl bg-white/10 border border-white/15 px-2.5 py-2 hover:bg-white/15"
+              className="btn-press min-h-[44px] rounded-xl bg-white/10 border border-white/15 px-2.5 py-2 hover:bg-white/15"
             >
               <p className="text-[10px] text-slate-300">Jadwal Aktif</p>
               <p className="font-mono-tabular text-sm font-bold text-emerald-300">
@@ -524,7 +545,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             <button
               type="button"
               onClick={() => setActiveTab('monitoring')}
-              className="btn-press rounded-xl bg-white/10 border border-white/15 px-2.5 py-2 hover:bg-white/15"
+              className="btn-press min-h-[44px] rounded-xl bg-white/10 border border-white/15 px-2.5 py-2 hover:bg-white/15"
             >
               <p className="text-[10px] text-slate-300">Live Siswa</p>
               <p className="font-mono-tabular text-sm font-bold text-white">
@@ -533,23 +554,63 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             </button>
           </div>
 
-          <SyncStatusIndicator
-            syncInfo={syncInfo}
-            onForceSync={onForceSync}
-            variant="sidebar"
-          />
+          <div className="hidden lg:block">
+            <SyncStatusIndicator
+              syncInfo={syncInfo}
+              onForceSync={onForceSync}
+              variant="sidebar"
+            />
+          </div>
 
           <button
             type="button"
             onClick={() => onSetLoggedAdmin(null)}
-            className="btn-press mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-xl border border-white/20 bg-white/10 px-3 py-2 text-xs font-semibold text-white hover:bg-white/20"
+            className="btn-press hidden lg:inline-flex mt-3 w-full items-center justify-center gap-1.5 rounded-xl border border-white/20 bg-white/10 px-3 py-2 text-xs font-semibold text-white hover:bg-white/20"
           >
             <LogOut className="h-3.5 w-3.5" />
             <span>Keluar Admin</span>
           </button>
         </div>
 
-        <nav className="surface-card rounded-3xl p-2 space-y-1">
+        {/* Mobile & Tablet Horizontal Scrollable Tab Strip (< lg) */}
+        <nav
+          aria-label="Menu Super Admin Mobile"
+          className="lg:hidden flex items-center gap-2 overflow-x-auto no-scrollbar pb-1"
+        >
+          {navItems.map((item) => {
+            const isActive = activeTab === item.id;
+            return (
+              <button
+                key={`mob-${item.id}`}
+                type="button"
+                onClick={() => {
+                  if (item.id === 'rekap') setRekapPresetStatus('ALL');
+                  setActiveTab(item.id);
+                }}
+                className={`btn-press min-h-[42px] inline-flex items-center gap-2 rounded-2xl border px-3.5 py-2 text-xs font-semibold whitespace-nowrap shrink-0 transition-colors ${
+                  isActive
+                    ? 'border-emerald-600/50 bg-emerald-700 text-white shadow-xs'
+                    : 'border-white/70 bg-white/60 text-slate-800 hover:bg-white/85'
+                }`}
+              >
+                {item.icon}
+                <span>{item.label}</span>
+                {typeof item.count === 'number' && (
+                  <span
+                    className={`font-mono-tabular text-[11px] ${
+                      isActive ? 'text-emerald-100' : 'text-slate-500'
+                    }`}
+                  >
+                    ({item.count})
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </nav>
+
+        {/* Desktop Vertical Navigation Rail (>= lg) */}
+        <nav aria-label="Menu Super Admin Desktop" className="hidden lg:block surface-card rounded-3xl p-2 space-y-1">
           {navItems.map((item) => {
             const isActive = activeTab === item.id;
             return (
@@ -560,7 +621,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   if (item.id === 'rekap') setRekapPresetStatus('ALL');
                   setActiveTab(item.id);
                 }}
-                className={`btn-press flex w-full items-center justify-between gap-2 rounded-xl px-3 py-2.5 text-xs font-semibold transition-all ${
+                className={`btn-press flex w-full items-center justify-between gap-2 rounded-xl px-3 py-2.5 text-xs font-semibold transition-colors ${
                   isActive
                     ? 'bg-emerald-700 text-white shadow-xs'
                     : 'text-slate-700 hover:bg-white/60 hover:text-slate-900'
@@ -586,14 +647,14 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       </aside>
 
       {/* Main Content */}
-      <section className="flex-1 min-w-0 space-y-6">
+      <section className="flex-1 min-w-0 space-y-5 sm:space-y-6">
         {/* Contextual Top Action Bar */}
-        <div className="relative z-30 surface-card rounded-3xl flex flex-wrap items-center justify-between gap-3 px-5 py-4">
-          <div>
+        <div className="relative z-30 surface-card rounded-3xl flex flex-col sm:flex-row sm:flex-wrap sm:items-center justify-between gap-3 px-4 sm:px-5 py-3.5 sm:py-4">
+          <div className="min-w-0">
             <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
               Pusat Kendali Super Admin &middot; MTs Nurul Hijrah
             </p>
-            <h1 className="font-display text-lg font-bold tracking-tight text-slate-900">
+            <h1 className="font-display text-base sm:text-lg font-bold tracking-tight text-slate-900 truncate">
               {activeNav?.label}
             </h1>
           </div>
@@ -607,7 +668,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             <button
               type="button"
               onClick={() => setActiveTab('monitoring')}
-              className="btn-press inline-flex items-center gap-1.5 rounded-xl border border-white/70 bg-white/60 px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-white/90 whitespace-nowrap"
+              className="btn-press min-h-[40px] inline-flex items-center gap-1.5 rounded-xl border border-white/70 bg-white/60 px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-white/90 whitespace-nowrap shrink-0"
             >
               <Video className="h-4 w-4 text-emerald-700" />
               <span>Live Monitoring ({activeLiveCount})</span>
@@ -618,7 +679,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 setRekapPresetStatus('ALL');
                 setActiveTab('rekap');
               }}
-              className="btn-press inline-flex items-center gap-1.5 rounded-xl bg-emerald-700 px-3.5 py-2 text-xs font-semibold text-white hover:bg-emerald-800 whitespace-nowrap"
+              className="btn-press min-h-[40px] inline-flex items-center gap-1.5 rounded-xl bg-emerald-700 px-3.5 py-2 text-xs font-semibold text-white hover:bg-emerald-800 whitespace-nowrap shrink-0"
             >
               <ClipboardList className="h-4 w-4" />
               <span>Rekap Nilai ({results.length})</span>
@@ -631,7 +692,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             {/* Global Quick Jump / Search Bar */}
             <div className="surface-card p-4 space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="relative flex-1 min-w-[220px]">
+                <div className="relative w-full sm:w-auto sm:flex-1 sm:min-w-[220px]">
                   <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                   <input
                     type="text"
@@ -895,7 +956,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           setAdminSelectedMapel(st.nama);
                           setActiveTab('bank-jadwal');
                         }}
-                        className="btn-press glass-subtle rounded-2xl p-3 text-left hover:bg-white/75 transition-all"
+                        className="btn-press glass-subtle rounded-2xl p-3 text-left hover:bg-white/75 transition-colors"
                       >
                         <div className="flex items-center justify-between gap-2 text-xs">
                           <span className="font-bold text-slate-900 truncate">{st.nama}</span>
@@ -905,8 +966,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                         </div>
                         <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-white/65">
                           <div
-                            className="h-full bg-emerald-600 transition-all"
-                            style={{ width: `${Math.max(st.qCount > 0 ? 6 : 0, widthPct)}%` }}
+                            className="h-full w-full origin-left bg-emerald-600 transition-transform"
+                            style={{ transform: `scaleX(${Math.max(st.qCount > 0 ? 0.06 : 0, widthPct / 100)})` }}
                           />
                         </div>
                       </button>
@@ -973,7 +1034,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     if (subjFormError) setSubjFormError(null);
                   }}
                   placeholder="Nama Mata Pelajaran (mis. Tahfidz Al-Qur'an)"
-                  className="glass-input flex-1 min-w-[200px] rounded-xl px-3.5 py-2 text-sm text-slate-900"
+                  className="glass-input w-full sm:w-auto sm:flex-1 sm:min-w-[200px] rounded-xl px-3.5 py-2 text-sm text-slate-900"
                 />
                 <input
                   type="text"
@@ -1025,7 +1086,51 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   {filteredSubjects.length} mata pelajaran
                 </span>
               </div>
-              <div className="overflow-x-auto">
+              {/* Mobile Card View (< md) */}
+              <div className="md:hidden divide-y divide-white/50">
+                {filteredSubjects.map((s) => (
+                  <div key={`mob-subj-${s.id}`} className="p-4 flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <span className="font-mono-tabular text-[11px] font-bold text-emerald-800">
+                        {s.kode}
+                      </span>
+                      <p className="font-semibold text-sm text-slate-900 truncate">{s.nama}</p>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingSubj(s);
+                          setSubjNama(s.nama);
+                          setSubjKode(s.kode);
+                        }}
+                        aria-label={`Edit mapel ${s.nama}`}
+                        className="btn-press min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl border border-white/70 bg-white/65 text-slate-700 hover:bg-white"
+                      >
+                        <Edit3 className="h-4 w-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (editingSubj?.id === s.id) {
+                            setEditingSubj(null);
+                            setSubjNama('');
+                            setSubjKode('');
+                          }
+                          await onDeleteSubject(s.id);
+                        }}
+                        aria-label={`Hapus mapel ${s.nama}`}
+                        className="btn-press min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl border border-red-300/70 bg-red-500/10 text-red-700 hover:bg-red-500/20"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Tablet/Desktop Table (>= md) */}
+              <div className="hidden md:block overflow-x-auto">
                 <table className="w-full text-left text-sm">
                   <thead className="border-b border-white/50 bg-white/35 text-xs font-semibold text-slate-700">
                     <tr>
@@ -1131,7 +1236,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     if (clsFormError) setClsFormError(null);
                   }}
                   placeholder="Nama Kelas (mis. IX C atau X IPA 1)"
-                  className="glass-input flex-1 min-w-[200px] rounded-xl px-3.5 py-2 text-sm text-slate-900"
+                  className="glass-input w-full sm:w-auto sm:flex-1 sm:min-w-[200px] rounded-xl px-3.5 py-2 text-sm text-slate-900"
                 />
                 <select
                   value={clsTingkat}
@@ -1366,7 +1471,57 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   {filteredTeachers.length} akun guru
                 </span>
               </div>
-              <div className="overflow-x-auto">
+              {/* Mobile Card View (< md) */}
+              <div className="md:hidden divide-y divide-white/50">
+                {filteredTeachers.map((t) => (
+                  <div key={`mob-tchr-${t.id}`} className="p-4 space-y-2.5">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="font-semibold text-sm text-slate-900 truncate">{t.nama}</p>
+                        <p className="text-xs text-slate-600">
+                          {getTeacherSubjects(t).join(', ')}
+                        </p>
+                      </div>
+                      <span
+                        className={`text-xs font-bold shrink-0 ${
+                          t.aktif ? 'text-emerald-800' : 'text-slate-500'
+                        }`}
+                      >
+                        {t.aktif ? 'Aktif' : 'Nonaktif'}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2 pt-1">
+                      <span className="font-mono-tabular text-[11px] text-slate-500">
+                        Kredensial terenkripsi SHA-256
+                      </span>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => openEditTeacherModal(t)}
+                          className="btn-press min-h-[40px] inline-flex items-center gap-1 rounded-xl border border-white/70 bg-white/65 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-white"
+                        >
+                          <Edit3 className="h-3.5 w-3.5" />
+                          <span>Edit</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            if (editingTeacher?.id === t.id) setEditingTeacher(null);
+                            await onDeleteTeacher(t.id);
+                          }}
+                          aria-label={`Hapus guru ${t.nama}`}
+                          className="btn-press min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl border border-red-300/70 bg-red-500/10 text-red-700 hover:bg-red-500/20"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Tablet/Desktop Table (>= md) */}
+              <div className="hidden md:block overflow-x-auto">
                 <table className="w-full text-left text-sm">
                   <thead className="border-b border-white/50 bg-white/35 text-xs font-semibold text-slate-700">
                     <tr>
@@ -1579,31 +1734,33 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
         {/* TAB: BANK SOAL & JADWAL PUSAT */}
         {activeTab === 'bank-jadwal' && (
-          <div className="space-y-8 panel-enter">
-            <BankSoalPanel
-              questions={questions}
-              subjects={subjectNames}
-              selectedSubject={effectiveAdminMapel}
-              onChangeSubject={setAdminSelectedMapel}
-              teacherName={loggedAdmin.nama}
-              onAddQuestion={onAddQuestion}
-              onUpdateQuestion={onUpdateQuestion}
-              onDeleteQuestion={onDeleteQuestion}
-              onDeleteQuestionsBatch={onDeleteQuestionsBatch}
-              onClearSubjectBank={onClearBankBySubject}
-            />
+          <Suspense fallback={<PanelFallback />}>
+            <div className="space-y-8 panel-enter">
+              <BankSoalPanel
+                questions={questions}
+                subjects={subjectNames}
+                selectedSubject={effectiveAdminMapel}
+                onChangeSubject={setAdminSelectedMapel}
+                teacherName={loggedAdmin.nama}
+                onAddQuestion={onAddQuestion}
+                onUpdateQuestion={onUpdateQuestion}
+                onDeleteQuestion={onDeleteQuestion}
+                onDeleteQuestionsBatch={onDeleteQuestionsBatch}
+                onClearSubjectBank={onClearBankBySubject}
+              />
 
-            <JadwalTesPanel
-              exams={exams}
-              questions={questions}
-              subjects={subjectNames}
-              classes={classNames}
-              teacherName={loggedAdmin.nama}
-              onSaveExam={onSaveExam}
-              onToggleExamActive={onToggleExamActive}
-              onDeleteExam={onDeleteExam}
-            />
-          </div>
+              <JadwalTesPanel
+                exams={exams}
+                questions={questions}
+                subjects={subjectNames}
+                classes={classNames}
+                teacherName={loggedAdmin.nama}
+                onSaveExam={onSaveExam}
+                onToggleExamActive={onToggleExamActive}
+                onDeleteExam={onDeleteExam}
+              />
+            </div>
+          </Suspense>
         )}
 
         {/* TAB: INTEGRATED AI QUESTION STUDIO */}
@@ -1622,11 +1779,13 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
         {/* TAB: LIVE MONITORING ALL PARTICIPANTS */}
         {activeTab === 'monitoring' && (
-          <LiveMonitoringGrid
-            sessions={liveStreams}
-            onSendWarning={onSendProctorWarning}
-            emptyTitle="Belum ada peserta ujian yang sedang aktif di seluruh mata pelajaran."
-          />
+          <Suspense fallback={<PanelFallback />}>
+            <LiveMonitoringGrid
+              sessions={liveStreams}
+              onSendWarning={onSendProctorWarning}
+              emptyTitle="Belum ada peserta ujian yang sedang aktif di seluruh mata pelajaran."
+            />
+          </Suspense>
         )}
 
         {/* TAB: REKAP NILAI SEMUA MAPEL */}
@@ -1653,6 +1812,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
               logs={syncLogs}
               syncInfo={syncInfo}
               onForceSync={onForceSync}
+              onOpenDiagnostics={onOpenDiagnostics}
             />
           </Suspense>
         )}

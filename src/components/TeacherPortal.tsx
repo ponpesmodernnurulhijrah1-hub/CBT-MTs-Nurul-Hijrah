@@ -32,13 +32,20 @@ import type {
   SyncStatusInfo,
   TeacherAccount,
 } from '../types/cbt';
-import { BankSoalPanel } from './BankSoalPanel';
-import { JadwalTesPanel } from './JadwalTesPanel';
-import { LiveMonitoringGrid } from './LiveMonitoringGrid';
 import { SyncStatusIndicator } from './SyncStatusIndicator';
 import { exportExamResultsToExcel } from '../utils/exportHelpers';
 import { getTeacherSubjects } from '../utils/storeSyncUtils';
 import type { TeacherTab } from './TeacherTutorAssistant';
+
+const BankSoalPanel = lazy(() =>
+  import('./BankSoalPanel').then((m) => ({ default: m.BankSoalPanel }))
+);
+const JadwalTesPanel = lazy(() =>
+  import('./JadwalTesPanel').then((m) => ({ default: m.JadwalTesPanel }))
+);
+const LiveMonitoringGrid = lazy(() =>
+  import('./LiveMonitoringGrid').then((m) => ({ default: m.LiveMonitoringGrid }))
+);
 
 const TeacherAnalytics = lazy(() =>
   import('./TeacherAnalytics').then((m) => ({ default: m.TeacherAnalytics }))
@@ -331,45 +338,57 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
     .join('');
 
   return (
-    <div className="mx-auto flex max-w-7xl flex-col lg:flex-row gap-6 px-4 sm:px-6 py-6 panel-enter">
-      {/* Executive Dark Glass Sidebar */}
-      <aside className="w-full lg:w-64 shrink-0 space-y-4">
+    <div className="mx-auto flex max-w-7xl flex-col lg:flex-row gap-4 lg:gap-6 px-3.5 sm:px-6 py-4 sm:py-6 panel-enter">
+      {/* Executive Dark Glass Sidebar (Compact on Phone/Tablet, Sticky Rail on Laptop/Desktop) */}
+      <aside className="w-full lg:w-64 shrink-0 space-y-3 lg:space-y-4 lg:sticky lg:top-20 lg:self-start">
         <div className="glass-dark rounded-3xl p-4 text-white">
-          <div className="flex items-center gap-3">
-            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-500/20 border border-emerald-400/35 font-display text-sm font-bold text-emerald-300">
-              {teacherInitials || 'GR'}
-            </span>
-            <div className="min-w-0">
-              <p className="text-[11px] font-semibold uppercase tracking-wider text-emerald-300">
-                Guru Pengampu
-              </p>
-              <h2 className="truncate font-display text-sm font-bold leading-snug">
-                {loggedTeacher.nama}
-              </h2>
-              {teacherSubjects.length > 1 ? (
-                <select
-                  aria-label="Pilih Mata Pelajaran Ampuan"
-                  value={teacherSubject}
-                  onChange={(e) => setSelectedTeacherSubject(e.target.value)}
-                  className="mt-1 w-full rounded-lg border border-white/25 bg-white/10 px-2 py-1 text-[11px] font-semibold text-emerald-200 focus:outline-none"
-                >
-                  {teacherSubjects.map((subj) => (
-                    <option key={subj} value={subj} className="bg-slate-900 text-white">
-                      {subj}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <p className="truncate text-xs text-slate-300">{teacherSubject}</p>
-              )}
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-500/20 border border-emerald-400/35 font-display text-sm font-bold text-emerald-300">
+                {teacherInitials || 'GR'}
+              </span>
+              <div className="min-w-0">
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-emerald-300">
+                  Guru Pengampu
+                </p>
+                <h2 className="truncate font-display text-sm font-bold leading-snug">
+                  {loggedTeacher.nama}
+                </h2>
+                {teacherSubjects.length > 1 ? (
+                  <select
+                    aria-label="Pilih Mata Pelajaran Ampuan"
+                    value={teacherSubject}
+                    onChange={(e) => setSelectedTeacherSubject(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-white/25 bg-white/10 px-2 py-1 text-[11px] font-semibold text-emerald-200 focus:outline-none"
+                  >
+                    {teacherSubjects.map((subj) => (
+                      <option key={subj} value={subj} className="bg-slate-900 text-white">
+                        {subj}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <p className="truncate text-xs text-slate-300">{teacherSubject}</p>
+                )}
+              </div>
             </div>
+
+            <button
+              type="button"
+              onClick={() => onSetLoggedTeacher(null)}
+              aria-label="Keluar Akun Guru"
+              className="btn-press lg:hidden min-h-[40px] inline-flex items-center gap-1.5 rounded-xl border border-white/20 bg-white/10 px-3 py-1.5 text-xs font-semibold text-white hover:bg-white/20 shrink-0"
+            >
+              <LogOut className="h-3.5 w-3.5" />
+              <span>Keluar</span>
+            </button>
           </div>
 
-          <div className="mt-4 grid grid-cols-2 gap-2 border-t border-white/15 pt-3 text-left">
+          <div className="mt-3 grid grid-cols-2 gap-2 border-t border-white/15 pt-3 text-left">
             <button
               type="button"
               onClick={() => setActiveTab('bank-soal')}
-              className="btn-press rounded-xl bg-white/10 border border-white/15 px-2.5 py-2 hover:bg-white/15"
+              className="btn-press min-h-[44px] rounded-xl bg-white/10 border border-white/15 px-2.5 py-2 hover:bg-white/15"
             >
               <p className="text-[10px] text-slate-300">Bank Soal</p>
               <p className="font-mono-tabular text-sm font-bold text-white">
@@ -379,7 +398,7 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
             <button
               type="button"
               onClick={() => setActiveTab('jadwal')}
-              className="btn-press rounded-xl bg-white/10 border border-white/15 px-2.5 py-2 hover:bg-white/15"
+              className="btn-press min-h-[44px] rounded-xl bg-white/10 border border-white/15 px-2.5 py-2 hover:bg-white/15"
             >
               <p className="text-[10px] text-slate-300">Jadwal Aktif</p>
               <p className="font-mono-tabular text-sm font-bold text-emerald-300">
@@ -388,23 +407,63 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
             </button>
           </div>
 
-          <SyncStatusIndicator
-            syncInfo={syncInfo}
-            onForceSync={onForceSync}
-            variant="sidebar"
-          />
+          <div className="hidden lg:block">
+            <SyncStatusIndicator
+              syncInfo={syncInfo}
+              onForceSync={onForceSync}
+              variant="sidebar"
+            />
+          </div>
 
           <button
             type="button"
             onClick={() => onSetLoggedTeacher(null)}
-            className="btn-press mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-xl border border-white/20 bg-white/10 px-3 py-2 text-xs font-semibold text-white hover:bg-white/20"
+            className="btn-press hidden lg:inline-flex mt-3 w-full items-center justify-center gap-1.5 rounded-xl border border-white/20 bg-white/10 px-3 py-2 text-xs font-semibold text-white hover:bg-white/20"
           >
             <LogOut className="h-3.5 w-3.5" />
             <span>Keluar Akun</span>
           </button>
         </div>
 
-        <nav className="surface-card rounded-3xl p-2 space-y-1">
+        {/* Mobile & Tablet Horizontal Scrollable Tab Strip (< lg) */}
+        <nav
+          aria-label="Menu Portal Guru Mobile"
+          className="lg:hidden flex items-center gap-2 overflow-x-auto no-scrollbar pb-1"
+        >
+          {navItems.map((item) => {
+            const isActive = activeTab === item.id;
+            return (
+              <button
+                key={`mob-${item.id}`}
+                type="button"
+                onClick={() => {
+                  if (item.id === 'hasil') setResultsPresetStatus('ALL');
+                  setActiveTab(item.id);
+                }}
+                className={`btn-press min-h-[42px] inline-flex items-center gap-2 rounded-2xl border px-3.5 py-2 text-xs font-semibold whitespace-nowrap shrink-0 transition-colors ${
+                  isActive
+                    ? 'border-emerald-600/50 bg-emerald-700 text-white shadow-xs'
+                    : 'border-white/70 bg-white/60 text-slate-800 hover:bg-white/85'
+                }`}
+              >
+                {item.icon}
+                <span>{item.label}</span>
+                {typeof item.count === 'number' && (
+                  <span
+                    className={`font-mono-tabular text-[11px] ${
+                      isActive ? 'text-emerald-100' : 'text-slate-500'
+                    }`}
+                  >
+                    ({item.count})
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </nav>
+
+        {/* Desktop Vertical Navigation Rail (>= lg) */}
+        <nav aria-label="Menu Portal Guru Desktop" className="hidden lg:block surface-card rounded-3xl p-2 space-y-1">
           {navItems.map((item) => {
             const isWalkHighlight =
               (walkthroughStep === 0 && item.id === 'bank-soal') ||
@@ -420,7 +479,7 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
                   if (item.id === 'hasil') setResultsPresetStatus('ALL');
                   setActiveTab(item.id);
                 }}
-                className={`btn-press flex w-full items-center justify-between gap-2 rounded-xl px-3 py-2.5 text-xs font-semibold transition-all ${
+                className={`btn-press flex w-full items-center justify-between gap-2 rounded-xl px-3 py-2.5 text-xs font-semibold transition-colors ${
                   isActive
                     ? 'bg-emerald-700 text-white shadow-xs'
                     : 'text-slate-700 hover:bg-white/60 hover:text-slate-900'
@@ -446,14 +505,14 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
       </aside>
 
       {/* Main Content */}
-      <section className="flex-1 min-w-0 space-y-6">
+      <section className="flex-1 min-w-0 space-y-5 sm:space-y-6">
         {/* Contextual Top Action Bar */}
-        <div className="relative z-30 surface-card rounded-3xl flex flex-wrap items-center justify-between gap-3 px-5 py-4">
+        <div className="relative z-30 surface-card rounded-3xl flex flex-col sm:flex-row sm:flex-wrap sm:items-center justify-between gap-3 px-4 sm:px-5 py-3.5 sm:py-4">
           <div className="min-w-0">
             <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
               Portal Guru &middot; {teacherSubject}
             </p>
-            <h1 className="font-display text-lg font-bold text-slate-900">
+            <h1 className="font-display text-base sm:text-lg font-bold text-slate-900 truncate">
               {activeNav?.label}
             </h1>
           </div>
@@ -469,7 +528,7 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
                 setActiveTab('bank-soal');
                 setCreateQuestionSignal((c) => c + 1);
               }}
-              className="btn-press inline-flex items-center gap-1.5 rounded-xl bg-emerald-700 px-3.5 py-2 text-xs font-bold text-white hover:bg-emerald-800 whitespace-nowrap shadow-[0_10px_22px_-10px_rgba(4,120,87,0.5)]"
+              className="btn-press min-h-[40px] inline-flex items-center gap-1.5 rounded-xl bg-emerald-700 px-3.5 py-2 text-xs font-bold text-white hover:bg-emerald-800 whitespace-nowrap shrink-0 shadow-[0_10px_22px_-10px_rgba(4,120,87,0.5)]"
             >
               <Plus className="h-4 w-4" />
               <span>Tambah Soal</span>
@@ -487,7 +546,7 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
                   `Rekap_Nilai_${teacherSubject.replace(/\s+/g, '_')}`
                 );
               }}
-              className="btn-press inline-flex items-center gap-1.5 rounded-xl border border-white/75 bg-white/70 px-3 py-2 text-xs font-bold text-slate-800 hover:bg-white/95 whitespace-nowrap"
+              className="btn-press min-h-[40px] inline-flex items-center gap-1.5 rounded-xl border border-white/75 bg-white/70 px-3 py-2 text-xs font-bold text-slate-800 hover:bg-white/95 whitespace-nowrap shrink-0"
             >
               <Download className="h-4 w-4 text-emerald-700" />
               <span>Ekspor Nilai</span>
@@ -501,7 +560,7 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
                     `Rekap Nilai ${teacherSubject} CBT MTs Nurul Hijrah`
                   )
                 }
-                className="btn-press inline-flex items-center gap-1.5 rounded-xl border border-emerald-300/75 bg-white/75 px-3 py-2 text-xs font-bold text-emerald-800 hover:bg-white whitespace-nowrap"
+                className="btn-press min-h-[40px] inline-flex items-center gap-1.5 rounded-xl border border-emerald-300/75 bg-white/75 px-3 py-2 text-xs font-bold text-emerald-800 hover:bg-white whitespace-nowrap shrink-0"
               >
                 <FileSpreadsheet className="h-4 w-4 text-emerald-700" />
                 <span>Google Sheets</span>
@@ -510,7 +569,7 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
             <button
               type="button"
               onClick={() => setTutorOpen((o) => !o)}
-              className="btn-press inline-flex items-center gap-1.5 rounded-xl border border-white/70 bg-white/55 px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-white/85 whitespace-nowrap"
+              className="btn-press min-h-[40px] inline-flex items-center gap-1.5 rounded-xl border border-white/70 bg-white/55 px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-white/85 whitespace-nowrap shrink-0"
             >
               <Sparkles className="h-4 w-4 text-emerald-700" />
               <span>Panduan Buat Soal</span>
@@ -521,7 +580,7 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
                 setActiveTab('bank-soal');
                 setWalkthroughStep(0);
               }}
-              className="btn-press inline-flex items-center gap-1.5 rounded-xl border border-white/70 bg-white/55 px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-white/85 whitespace-nowrap"
+              className="btn-press min-h-[40px] inline-flex items-center gap-1.5 rounded-xl border border-white/70 bg-white/55 px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-white/85 whitespace-nowrap shrink-0"
             >
               <Compass className="h-4 w-4 text-emerald-700" />
               <span>Tur Panduan</span>
@@ -529,7 +588,7 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
             <button
               type="button"
               onClick={() => setVideoModalOpen(true)}
-              className="btn-press inline-flex items-center gap-1.5 rounded-xl border border-white/70 bg-white/55 px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-white/85 whitespace-nowrap"
+              className="btn-press min-h-[40px] inline-flex items-center gap-1.5 rounded-xl border border-white/70 bg-white/55 px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-white/85 whitespace-nowrap shrink-0"
             >
               <PlayCircle className="h-4 w-4 text-emerald-700" />
               <span>Video Tutorial</span>
@@ -616,7 +675,7 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
                     {subjectQuestions.length} butir tersedia
                   </p>
                 </div>
-                <ArrowRight className="h-4 w-4 text-slate-400 group-hover:text-emerald-700 group-hover:translate-x-0.5 transition-all shrink-0" />
+                <ArrowRight className="h-4 w-4 text-slate-400 group-hover:text-emerald-700 group-hover:translate-x-0.5 transition-[transform,color] shrink-0" />
               </button>
 
               <button
@@ -628,7 +687,7 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
                   <p className="text-xs font-bold text-slate-900 truncate">Import Word / AI</p>
                   <p className="text-[11px] text-slate-500 truncate">Tabel &amp; gambar utuh</p>
                 </div>
-                <ArrowRight className="h-4 w-4 text-slate-400 group-hover:text-emerald-700 group-hover:translate-x-0.5 transition-all shrink-0" />
+                <ArrowRight className="h-4 w-4 text-slate-400 group-hover:text-emerald-700 group-hover:translate-x-0.5 transition-[transform,color] shrink-0" />
               </button>
 
               <button
@@ -642,7 +701,7 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
                     {activeSubjectExams.length} jadwal dibuka
                   </p>
                 </div>
-                <ArrowRight className="h-4 w-4 text-slate-400 group-hover:text-emerald-700 group-hover:translate-x-0.5 transition-all shrink-0" />
+                <ArrowRight className="h-4 w-4 text-slate-400 group-hover:text-emerald-700 group-hover:translate-x-0.5 transition-[transform,color] shrink-0" />
               </button>
 
               <button
@@ -656,7 +715,7 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
                     {activeLiveCount} peserta aktif
                   </p>
                 </div>
-                <ArrowRight className="h-4 w-4 text-slate-400 group-hover:text-emerald-700 group-hover:translate-x-0.5 transition-all shrink-0" />
+                <ArrowRight className="h-4 w-4 text-slate-400 group-hover:text-emerald-700 group-hover:translate-x-0.5 transition-[transform,color] shrink-0" />
               </button>
             </div>
 
@@ -692,7 +751,7 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
                         key={item.label}
                         type="button"
                         onClick={() => setActiveTab('bank-soal')}
-                        className="btn-press glass-subtle rounded-2xl p-3 text-left hover:bg-white/75 transition-all"
+                        className="btn-press glass-subtle rounded-2xl p-3 text-left hover:bg-white/75 transition-colors"
                       >
                         <div className="flex items-center justify-between text-[11px] text-slate-600">
                           <span className="truncate">{item.label}</span>
@@ -806,21 +865,23 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
         )}
 
         {activeTab === 'bank-soal' && (
-          <BankSoalPanel
-            questions={questions}
-            subjects={subjectNames}
-            selectedSubject={teacherSubject}
-            onChangeSubject={() => {}}
-            lockedSubject={teacherSubject}
-            teacherName={loggedTeacher.nama}
-            onAddQuestion={onAddQuestion}
-            onUpdateQuestion={onUpdateQuestion}
-            onDeleteQuestion={onDeleteQuestion}
-            onDeleteQuestionsBatch={onDeleteQuestionsBatch}
-            onClearSubjectBank={onClearBankBySubject}
-            onOpenVideoTutorial={() => setVideoModalOpen(true)}
-            openCreateSignal={createQuestionSignal}
-          />
+          <Suspense fallback={<TabLoading />}>
+            <BankSoalPanel
+              questions={questions}
+              subjects={subjectNames}
+              selectedSubject={teacherSubject}
+              onChangeSubject={() => {}}
+              lockedSubject={teacherSubject}
+              teacherName={loggedTeacher.nama}
+              onAddQuestion={onAddQuestion}
+              onUpdateQuestion={onUpdateQuestion}
+              onDeleteQuestion={onDeleteQuestion}
+              onDeleteQuestionsBatch={onDeleteQuestionsBatch}
+              onClearSubjectBank={onClearBankBySubject}
+              onOpenVideoTutorial={() => setVideoModalOpen(true)}
+              openCreateSignal={createQuestionSignal}
+            />
+          </Suspense>
         )}
 
         {activeTab === 'import' && (
@@ -838,25 +899,29 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
         )}
 
         {activeTab === 'jadwal' && (
-          <JadwalTesPanel
-            exams={exams}
-            questions={questions}
-            subjects={subjectNames}
-            classes={classNames}
-            lockedSubject={teacherSubject}
-            teacherName={loggedTeacher.nama}
-            onSaveExam={onSaveExam}
-            onToggleExamActive={onToggleExamActive}
-            onDeleteExam={onDeleteExam}
-          />
+          <Suspense fallback={<TabLoading />}>
+            <JadwalTesPanel
+              exams={exams}
+              questions={questions}
+              subjects={subjectNames}
+              classes={classNames}
+              lockedSubject={teacherSubject}
+              teacherName={loggedTeacher.nama}
+              onSaveExam={onSaveExam}
+              onToggleExamActive={onToggleExamActive}
+              onDeleteExam={onDeleteExam}
+            />
+          </Suspense>
         )}
 
         {activeTab === 'monitoring' && (
-          <LiveMonitoringGrid
-            sessions={subjectLiveStreams}
-            onSendWarning={onSendProctorWarning}
-            emptyTitle={`Belum ada siswa yang sedang ujian mata pelajaran ${teacherSubject}.`}
-          />
+          <Suspense fallback={<TabLoading />}>
+            <LiveMonitoringGrid
+              sessions={subjectLiveStreams}
+              onSendWarning={onSendProctorWarning}
+              emptyTitle={`Belum ada siswa yang sedang ujian mata pelajaran ${teacherSubject}.`}
+            />
+          </Suspense>
         )}
 
         {activeTab === 'hasil' && (

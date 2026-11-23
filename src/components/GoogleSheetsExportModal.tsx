@@ -347,7 +347,7 @@ export const GoogleSheetsExportModal: React.FC<GoogleSheetsExportModalProps> = (
                     setErrorMsg(null);
                     setConfirmOverwriteOpen(false);
                   }}
-                  className={`btn-press inline-flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition-all ${
+                  className={`btn-press inline-flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition-colors ${
                     mode === 'create'
                       ? 'bg-emerald-700 text-white shadow-sm'
                       : 'text-slate-700 hover:bg-white/60'
@@ -363,7 +363,7 @@ export const GoogleSheetsExportModal: React.FC<GoogleSheetsExportModalProps> = (
                     setErrorMsg(null);
                     setConfirmOverwriteOpen(false);
                   }}
-                  className={`btn-press inline-flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition-all ${
+                  className={`btn-press inline-flex items-center justify-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition-colors ${
                     mode === 'existing'
                       ? 'bg-emerald-700 text-white shadow-sm'
                       : 'text-slate-700 hover:bg-white/60'

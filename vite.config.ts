@@ -5,12 +5,25 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { defineConfig } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
+import {
+  SCHEMA_VERSION,
+  computeDeterministicSourceHash,
+  readSourceAppVersion,
+} from './buildHash';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export default defineConfig(() => {
+  const appVersion = readSourceAppVersion(__dirname);
+  const buildHash = computeDeterministicSourceHash(__dirname, appVersion);
+  process.env.VITE_APP_BUILD_HASH = buildHash;
+
   return {
+    define: {
+      __APP_BUILD_HASH__: JSON.stringify(buildHash),
+      'import.meta.env.VITE_APP_BUILD_HASH': JSON.stringify(buildHash),
+    },
     plugins: [
       react(),
       tailwindcss(),
@@ -20,18 +33,30 @@ export default defineConfig(() => {
         filename: 'sw.ts',
         registerType: 'autoUpdate',
         injectRegister: false,
-        includeAssets: ['icon.svg', 'apple-touch-icon.png', 'pwa-192x192.png', 'pwa-512x512.png', 'pwa-maskable-512x512.png'],
+        includeAssets: [
+          'icon.svg',
+          'apple-touch-icon.png',
+          'pwa-192x192.png',
+          'pwa-512x512.png',
+          'pwa-maskable-512x512.png',
+        ],
         manifest: {
           id: '/',
           name: 'CBT MTs Nurul Hijrah',
           short_name: 'CBT Nurul',
-          description: 'Sistem Ujian Online CBT Real-Time, Live Proctoring & Bank Soal MTs Nurul Hijrah.',
+          description:
+            'Sistem Ujian Online CBT Real-Time, Live Proctoring & Bank Soal MTs Nurul Hijrah.',
+          lang: 'id',
+          dir: 'ltr',
           theme_color: '#065f46',
           background_color: '#ffffff',
           display: 'standalone',
+          display_override: ['standalone', 'minimal-ui'],
           orientation: 'any',
           start_url: '/',
           scope: '/',
+          prefer_related_applications: false,
+          categories: ['education'],
           icons: [
             {
               src: '/pwa-192x192.png',
@@ -52,6 +77,14 @@ export default defineConfig(() => {
               purpose: 'maskable',
             },
           ],
+          shortcuts: [
+            {
+              name: 'Masuk Ruang Ujian',
+              short_name: 'Ujian',
+              url: '/',
+              icons: [{ src: '/pwa-192x192.png', sizes: '192x192', type: 'image/png' }],
+            },
+          ],
         },
         injectManifest: {
           globPatterns: ['**/*.{js,css,ico,png,svg,woff,woff2}'],
@@ -62,19 +95,45 @@ export default defineConfig(() => {
           type: 'module',
         },
       }),
-      // Copies src/assets into dist/ so root-relative URLs still resolve in production builds.
+      // Writes dist/version.json on production build, stamps build hash, and ensures manifest link sends credentials.
       {
-        name: 'copy-unbundled-src-assets',
-        apply: 'build',
+        name: 'write-version-manifest-and-stamp-html',
+        transformIndexHtml: {
+          order: 'post',
+          handler(html: string): string {
+            let out = html
+              .replace(/__APP_BUILD_HASH__/g, buildHash)
+              .replace(/__APP_VERSION__/g, appVersion);
+            if (/<link\s+rel=["']manifest["'][^>]*>/i.test(out)) {
+              out = out.replace(
+                /<link\s+rel=["']manifest["'][^>]*>/i,
+                '<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials" />'
+              );
+            } else {
+              out = out.replace(
+                '</head>',
+                '    <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials" />\n  </head>'
+              );
+            }
+            return out;
+          },
+        },
         closeBundle(error?: Error): void {
-          if (error) {
-            return;
-          }
+          if (error) return;
           const distDir = path.resolve(__dirname, 'dist');
-          const srcAssets = path.resolve(__dirname, 'src/assets');
-          const distAssets = path.resolve(distDir, 'src/assets');
-          if (fs.existsSync(distDir) && fs.existsSync(srcAssets)) {
-            fs.cpSync(srcAssets, distAssets, { recursive: true, force: true });
+          if (fs.existsSync(distDir)) {
+            const manifest = {
+              version: appVersion,
+              buildHash,
+              buildId: buildHash,
+              schemaVersion: SCHEMA_VERSION,
+              builtAt: new Date().toISOString(),
+            };
+            fs.writeFileSync(
+              path.resolve(distDir, 'version.json'),
+              JSON.stringify(manifest, null, 2),
+              'utf8'
+            );
           }
         },
       },

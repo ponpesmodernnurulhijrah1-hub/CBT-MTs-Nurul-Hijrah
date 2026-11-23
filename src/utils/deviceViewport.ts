@@ -1,0 +1,131 @@
+export type DeviceViewportClass = 'mobile' | 'tablet' | 'desktop';
+export type PwaDisplayMode = 'standalone' | 'browser';
+
+export const IDEAL_VIEWPORT_CONTENT =
+  'width=device-width, initial-scale=1.0, viewport-fit=cover';
+
+/**
+ * Classifies the active viewport width into responsive device tiers matching Tailwind breakpoints.
+ */
+export function classifyDeviceType(width: number): DeviceViewportClass {
+  const safeWidth = Number.isFinite(width) && width > 0 ? width : 390;
+  if (safeWidth < 640) return 'mobile';
+  if (safeWidth < 1024) return 'tablet';
+  return 'desktop';
+}
+
+/**
+ * Resolves the true CSS viewport width on standalone PWAs where visualViewport or innerWidth
+ * may temporarily lag behind after orientation changes or window resizes.
+ */
+export function resolveEffectiveViewportWidth(params: {
+  innerWidth?: number | null;
+  clientWidth?: number | null;
+  visualViewportWidth?: number | null;
+}): number {
+  const candidates = [params.visualViewportWidth, params.innerWidth, params.clientWidth].filter(
+    (v): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0
+  );
+  if (candidates.length === 0) return 390;
+  return Math.round(Math.min(...candidates));
+}
+
+/**
+ * Detects whether an installed mobile/touch PWA has fallen back into a 980px desktop layout viewport.
+ */
+export function isViewportStuckInDesktopFallback(params: {
+  clientWidth: number;
+  screenWidth: number;
+  isTouchDevice: boolean;
+}): boolean {
+  if (!params.isTouchDevice) return false;
+  if (!Number.isFinite(params.screenWidth) || params.screenWidth <= 0) return false;
+  if (!Number.isFinite(params.clientWidth) || params.clientWidth <= 0) return false;
+  return params.screenWidth <= 640 && params.clientWidth >= 800;
+}
+
+export function detectInstalledDisplayMode(
+  isStandaloneMediaMatch: boolean,
+  isNavigatorStandalone: boolean
+): PwaDisplayMode {
+  return isStandaloneMediaMatch || isNavigatorStandalone ? 'standalone' : 'browser';
+}
+
+/**
+ * Enforces `width=device-width, initial-scale=1.0, viewport-fit=cover` on the document's viewport meta tag
+ * and forces a viewport re-parse if a mobile browser/WebAPK loaded with a 980px desktop fallback.
+ */
+export function ensureResponsiveViewportMeta(): void {
+  if (typeof document === 'undefined') return;
+  let meta = document.querySelector<HTMLMetaElement>('meta[name="viewport"]');
+  if (!meta) {
+    meta = document.createElement('meta');
+    meta.name = 'viewport';
+    meta.id = 'app-viewport';
+    meta.content = IDEAL_VIEWPORT_CONTENT;
+    document.head.prepend(meta);
+    return;
+  }
+
+  if (meta.getAttribute('content') !== IDEAL_VIEWPORT_CONTENT) {
+    meta.setAttribute('content', IDEAL_VIEWPORT_CONTENT);
+  }
+
+  const isTouch =
+    typeof window !== 'undefined' &&
+    (window.matchMedia?.('(pointer: coarse)').matches || navigator.maxTouchPoints > 0);
+  const screenW = typeof window !== 'undefined' ? window.screen?.availWidth || window.screen?.width || 0 : 0;
+  const clientW = document.documentElement?.clientWidth || 0;
+
+  if (
+    isViewportStuckInDesktopFallback({
+      clientWidth: clientW,
+      screenWidth: screenW,
+      isTouchDevice: Boolean(isTouch),
+    })
+  ) {
+    meta.setAttribute('content', 'width=device-width, initial-scale=1.0001, viewport-fit=cover');
+    meta.setAttribute('content', IDEAL_VIEWPORT_CONTENT);
+  }
+}
+
+/**
+ * Synchronizes `data-device-type`, `data-display-mode`, and `--app-dvh` on `<html>`
+ * whenever window dimensions, visualViewport, orientation, or standalone display-mode change.
+ */
+export function syncDocumentDeviceAttributes(): {
+  deviceType: DeviceViewportClass;
+  displayMode: PwaDisplayMode;
+  width: number;
+} {
+  if (typeof window === 'undefined' || typeof document === 'undefined') {
+    return { deviceType: 'desktop', displayMode: 'browser', width: 1280 };
+  }
+
+  ensureResponsiveViewportMeta();
+
+  const effectiveWidth = resolveEffectiveViewportWidth({
+    innerWidth: window.innerWidth,
+    clientWidth: document.documentElement.clientWidth,
+    visualViewportWidth: window.visualViewport?.width ?? null,
+  });
+  const deviceType = classifyDeviceType(effectiveWidth);
+  const isStandaloneMatch = Boolean(
+    window.matchMedia?.('(display-mode: standalone)').matches ||
+      window.matchMedia?.('(display-mode: minimal-ui)').matches
+  );
+  const isNavStandalone = Boolean(
+    (window.navigator as unknown as { standalone?: boolean }).standalone
+  );
+  const displayMode = detectInstalledDisplayMode(isStandaloneMatch, isNavStandalone);
+
+  const root = document.documentElement;
+  root.dataset.deviceType = deviceType;
+  root.dataset.displayMode = displayMode;
+  const vh = window.visualViewport?.height || window.innerHeight || 0;
+  if (vh > 0) {
+    root.style.setProperty('--app-dvh', `${vh}px`);
+  }
+
+  return { deviceType, displayMode, width: effectiveWidth };
+}

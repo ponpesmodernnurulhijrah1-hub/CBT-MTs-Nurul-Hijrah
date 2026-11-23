@@ -2,11 +2,100 @@ export const RELOADED_VERSION_STORAGE_KEY = 'cbt_reloaded_to_version';
 export const RELOADED_BUILD_STORAGE_KEY = 'cbt_reloaded_to_build';
 export const RELOAD_ATTEMPTS_STORAGE_KEY = 'cbt_reloaded_attempts_v2';
 export const SW_RELOAD_TIMESTAMP_KEY = 'cbt_sw_reloaded_at';
+export const SCHEMA_VERSION_STORAGE_KEY = 'cbt_app_schema_version';
+export const APP_VERSION_STORAGE_KEY = 'cbt_app_version';
+export const APP_BUILD_HASH_STORAGE_KEY = 'cbt_app_build_hash';
+export const SW_HEARTBEAT_INTERVAL_MS = 30 * 60 * 1000;
 
+const LEGACY_INCOMPATIBLE_STORAGE_KEYS = [
+  'cbt_mts_nurul_hijrah_db_v1',
+  'cbt_mts_nurul_hijrah_seeded_v1',
+  'cbt_pwa_version',
+  'cbt_cached_version',
+];
+
+const DB_LS_KEY = 'cbt_mts_nurul_hijrah_db_v2';
 const PRESERVED_CACHE_NAMES = new Set(['google-fonts-cache']);
 
+export interface StorageLike {
+  getItem: (key: string) => string | null;
+  setItem: (key: string, value: string) => void;
+  removeItem: (key: string) => void;
+}
+
+export interface StorageMigrationResult {
+  migrated: boolean;
+  previousSchemaVersion: number | null;
+  currentSchemaVersion: number;
+  removedKeys: string[];
+  sanitizedDb: boolean;
+}
+
 /**
- * Parses release version strings such as '2026.11.21-v6' or '1.2.3' into numeric tuples
+ * Cleans legacy/incompatible localStorage keys across old PWA versions
+ * and sanitizes malformed db_v2 snapshots while preserving valid records and offline sync queues.
+ */
+export function migrateLegacyStorageSchema(
+  storage: StorageLike | null | undefined,
+  targetSchemaVersion: number
+): StorageMigrationResult {
+  const result: StorageMigrationResult = {
+    migrated: false,
+    previousSchemaVersion: null,
+    currentSchemaVersion: targetSchemaVersion,
+    removedKeys: [],
+    sanitizedDb: false,
+  };
+  if (!storage) return result;
+
+  try {
+    const rawPrev = storage.getItem(SCHEMA_VERSION_STORAGE_KEY);
+    const parsedPrev = rawPrev ? Number.parseInt(rawPrev, 10) : NaN;
+    result.previousSchemaVersion = Number.isFinite(parsedPrev) ? parsedPrev : null;
+
+    if (result.previousSchemaVersion !== targetSchemaVersion) {
+      result.migrated = true;
+      for (const legacyKey of LEGACY_INCOMPATIBLE_STORAGE_KEYS) {
+        if (storage.getItem(legacyKey) !== null) {
+          storage.removeItem(legacyKey);
+          result.removedKeys.push(legacyKey);
+        }
+      }
+
+      const rawDb = storage.getItem(DB_LS_KEY);
+      if (rawDb) {
+        try {
+          const parsed = JSON.parse(rawDb) as Record<string, unknown> | null;
+          const isValidObject =
+            parsed !== null &&
+            typeof parsed === 'object' &&
+            !Array.isArray(parsed) &&
+            Array.isArray(parsed.subjects) &&
+            Array.isArray(parsed.classes) &&
+            Array.isArray(parsed.exams);
+          if (!isValidObject) {
+            storage.removeItem(DB_LS_KEY);
+            result.removedKeys.push(DB_LS_KEY);
+            result.sanitizedDb = true;
+          }
+        } catch {
+          storage.removeItem(DB_LS_KEY);
+          result.removedKeys.push(DB_LS_KEY);
+          result.sanitizedDb = true;
+        }
+      }
+
+      storage.setItem(SCHEMA_VERSION_STORAGE_KEY, String(targetSchemaVersion));
+    }
+  } catch {
+    // Ignore restricted storage environments (e.g. Safari private mode)
+  }
+
+  return result;
+}
+
+/**
+ * Parses release version strings such as '2026.11.22-v7' or '1.2.3' into numeric tuples
  * for reliable monotonic comparisons across devices.
  */
 export function parseAppVersionTuple(version?: string | null): number[] | null {
@@ -109,8 +198,8 @@ export function stripCacheBustParam(currentHref: string): string | null {
 
 /**
  * Determines whether the client should trigger an update reload.
- * Returns true when the server/pulse reports a different (non-older) version OR a different buildId
- * AND we have not already exceeded retry limits for that exact target.
+ * Supports both semantic version comparison AND compile-time `buildHash` / `buildId` mismatch detection
+ * with bounded retry cooldowns to avoid infinite reload loops.
  */
 export function shouldTriggerAppUpdate(params: {
   clientVersion: string;
@@ -119,14 +208,20 @@ export function shouldTriggerAppUpdate(params: {
   clientBuildId?: string | null;
   serverBuildId?: string | null;
   alreadyReloadedBuildId?: string | null;
+  clientBuildHash?: string | null;
+  serverBuildHash?: string | null;
   versionReloadAttempts?: number;
   lastReloadAttemptAtMs?: number | null;
   nowMs?: number;
+  maxAttempts?: number;
+  retryCooldownMs?: number;
 }): boolean {
   const serverVer = (params.serverVersion || '').trim();
   const clientVer = (params.clientVersion || '').trim();
-  const serverBuild = (params.serverBuildId || '').trim();
-  const clientBuild = (params.clientBuildId || '').trim();
+  const serverBuild = (params.serverBuildHash || params.serverBuildId || '').trim();
+  const clientBuild = (params.clientBuildHash || params.clientBuildId || '').trim();
+  const maxAttempts = params.maxAttempts ?? 2;
+  const retryCooldownMs = params.retryCooldownMs ?? 8_000;
 
   // Never downgrade a newer client to an older remote version
   const serverIsOlderThanClient = Boolean(
@@ -140,23 +235,32 @@ export function shouldTriggerAppUpdate(params: {
     } else if (
       typeof params.versionReloadAttempts === 'number' &&
       params.versionReloadAttempts > 0 &&
-      params.versionReloadAttempts < 2
+      params.versionReloadAttempts < maxAttempts
     ) {
       const now = params.nowMs ?? Date.now();
       const last = params.lastReloadAttemptAtMs ?? 0;
-      if (now - last >= 8_000) {
+      if (now - last >= retryCooldownMs) {
         versionChanged = true;
       }
     }
   }
 
-  const buildChanged = Boolean(
-    !serverIsOlderThanClient &&
-      serverBuild &&
-      clientBuild &&
-      serverBuild !== clientBuild &&
-      params.alreadyReloadedBuildId !== serverBuild
-  );
+  let buildChanged = false;
+  if (!serverIsOlderThanClient && serverBuild && clientBuild && serverBuild !== clientBuild) {
+    if (params.alreadyReloadedBuildId !== serverBuild) {
+      buildChanged = true;
+    } else if (
+      typeof params.versionReloadAttempts === 'number' &&
+      params.versionReloadAttempts > 0 &&
+      params.versionReloadAttempts < maxAttempts
+    ) {
+      const now = params.nowMs ?? Date.now();
+      const last = params.lastReloadAttemptAtMs ?? 0;
+      if (now - last >= retryCooldownMs) {
+        buildChanged = true;
+      }
+    }
+  }
 
   return versionChanged || buildChanged;
 }
@@ -182,4 +286,178 @@ export function shouldReloadForServiceWorkerUpdate(params: {
     return false;
   }
   return true;
+}
+
+/**
+ * Evaluates a Service Worker heartbeat response to decide whether the running UI bundle
+ * should trigger a soft reload due to a buildHash or version mismatch.
+ */
+export function shouldSoftReloadFromSwHeartbeat(params: {
+  clientVersion: string;
+  clientBuildHash: string;
+  swVersion?: string | null;
+  swBuildHash?: string | null;
+  alreadyReloadedForSwHash?: string | null;
+}): boolean {
+  const clientVer = (params.clientVersion || '').trim();
+  const clientHash = (params.clientBuildHash || '').trim();
+  const swVer = (params.swVersion || '').trim();
+  const swHash = (params.swBuildHash || '').trim();
+
+  if (swHash && clientHash && swHash !== clientHash) {
+    if (params.alreadyReloadedForSwHash === swHash) {
+      return false;
+    }
+    return true;
+  }
+
+  if (swVer && clientVer && swVer !== clientVer && isNewerAppVersion(swVer, clientVer)) {
+    return true;
+  }
+
+  return false;
+}
+
+export type VersionSyncDiagnosisStatus =
+  | 'synced'
+  | 'stale_version'
+  | 'stale_hash'
+  | 'stale_pulse'
+  | 'client_ahead'
+  | 'offline_or_unreachable';
+
+export interface VersionSyncDiagnosis {
+  status: VersionSyncDiagnosisStatus;
+  isSynced: boolean;
+  headline: string;
+  explanation: string;
+  clientVersion: string;
+  serverVersion: string | null;
+  clientBuildHash: string;
+  serverBuildHash: string | null;
+  pulseVersion: string | null;
+  pulseBuildHash: string | null;
+}
+
+/**
+ * Evaluates why an installed PWA might be stuck on an older cached version by comparing
+ * compile-time client hash & version against the live server manifest and Firestore cross-device pulse.
+ */
+export function diagnoseVersionSync(params: {
+  clientVersion: string;
+  clientBuildHash: string;
+  serverVersion?: string | null;
+  serverBuildHash?: string | null;
+  pulseVersion?: string | null;
+  pulseBuildHash?: string | null;
+}): VersionSyncDiagnosis {
+  const clientVer = (params.clientVersion || '').trim();
+  const clientHash = (params.clientBuildHash || '').trim();
+  const serverVer = (params.serverVersion || '').trim() || null;
+  const serverHash = (params.serverBuildHash || '').trim() || null;
+  const pulseVer = (params.pulseVersion || '').trim() || null;
+  const pulseHash = (params.pulseBuildHash || '').trim() || null;
+
+  if (!serverVer && !serverHash) {
+    if (pulseVer && isNewerAppVersion(pulseVer, clientVer)) {
+      return {
+        status: 'stale_pulse',
+        isSynced: false,
+        headline: 'Versi Tertinggal (Terdeteksi via Firestore Pulse)',
+        explanation: `Manifest server tidak terjangkau, namun perangkat lain melaporkan rilis terbaru v${pulseVer} (klien masih v${clientVer}).`,
+        clientVersion: clientVer,
+        serverVersion: serverVer,
+        clientBuildHash: clientHash,
+        serverBuildHash: serverHash,
+        pulseVersion: pulseVer,
+        pulseBuildHash: pulseHash,
+      };
+    }
+    return {
+      status: 'offline_or_unreachable',
+      isSynced: false,
+      headline: 'Manifest Server Belum Terverifikasi',
+      explanation:
+        'Tidak dapat menghubungi endpoint manifest server (/api/version atau /version.json). Periksa koneksi internet lalu tekan Periksa Manifest.',
+      clientVersion: clientVer,
+      serverVersion: serverVer,
+      clientBuildHash: clientHash,
+      serverBuildHash: serverHash,
+      pulseVersion: pulseVer,
+      pulseBuildHash: pulseHash,
+    };
+  }
+
+  if (serverVer && isNewerAppVersion(serverVer, clientVer)) {
+    return {
+      status: 'stale_version',
+      isSynced: false,
+      headline: 'PWA Memakai Cache Versi Lama',
+      explanation: `Bundle klien masih menjalankan v${clientVer} sementara server telah merilis v${serverVer}. Service Worker atau cache browser lama perlu dibersihkan.`,
+      clientVersion: clientVer,
+      serverVersion: serverVer,
+      clientBuildHash: clientHash,
+      serverBuildHash: serverHash,
+      pulseVersion: pulseVer,
+      pulseBuildHash: pulseHash,
+    };
+  }
+
+  if (serverVer && isNewerAppVersion(clientVer, serverVer)) {
+    return {
+      status: 'client_ahead',
+      isSynced: true,
+      headline: 'Versi Klien Lebih Baru dari Server Manifest',
+      explanation: `Klien berjalan pada v${clientVer} sedangkan manifest server melaporkan v${serverVer}.`,
+      clientVersion: clientVer,
+      serverVersion: serverVer,
+      clientBuildHash: clientHash,
+      serverBuildHash: serverHash,
+      pulseVersion: pulseVer,
+      pulseBuildHash: pulseHash,
+    };
+  }
+
+  if (serverHash && clientHash && serverHash !== clientHash) {
+    return {
+      status: 'stale_hash',
+      isSynced: false,
+      headline: 'Build Hash Tidak Cocok (Cache Bundle Lama)',
+      explanation: `Nomor versi sama (v${clientVer}), tetapi hash build klien (${clientHash}) berbeda dengan manifest server (${serverHash}). Perangkat masih memuat bundel JS/CSS lama.`,
+      clientVersion: clientVer,
+      serverVersion: serverVer,
+      clientBuildHash: clientHash,
+      serverBuildHash: serverHash,
+      pulseVersion: pulseVer,
+      pulseBuildHash: pulseHash,
+    };
+  }
+
+  if (pulseVer && isNewerAppVersion(pulseVer, clientVer)) {
+    return {
+      status: 'stale_pulse',
+      isSynced: false,
+      headline: 'Rilis Baru Aktif di Perangkat Lain',
+      explanation: `Firestore Sync Pulse mencatat versi v${pulseVer} sudah aktif di perangkat lain, sedangkan perangkat ini masih di v${clientVer}.`,
+      clientVersion: clientVer,
+      serverVersion: serverVer,
+      clientBuildHash: clientHash,
+      serverBuildHash: serverHash,
+      pulseVersion: pulseVer,
+      pulseBuildHash: pulseHash,
+    };
+  }
+
+  return {
+    status: 'synced',
+    isSynced: true,
+    headline: 'Sinkron Sempurna & Versi Terbaru',
+    explanation: `Versi (v${clientVer}) dan hash build (${clientHash}) identik dengan manifest server pusat.`,
+    clientVersion: clientVer,
+    serverVersion: serverVer,
+    clientBuildHash: clientHash,
+    serverBuildHash: serverHash,
+    pulseVersion: pulseVer,
+    pulseBuildHash: pulseHash,
+  };
 }

@@ -1,20 +1,58 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { APP_VERSION } from '../config/version';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { APP_BUILD_HASH, APP_SCHEMA_VERSION, APP_VERSION } from '../config/version';
 import {
+  APP_BUILD_HASH_STORAGE_KEY,
+  APP_VERSION_STORAGE_KEY,
   RELOADED_BUILD_STORAGE_KEY,
   RELOADED_VERSION_STORAGE_KEY,
   RELOAD_ATTEMPTS_STORAGE_KEY,
   SW_RELOAD_TIMESTAMP_KEY,
   buildCacheBustUrl,
+  diagnoseVersionSync,
   isNewerAppVersion,
+  migrateLegacyStorageSchema,
   shouldPurgeCacheName,
   shouldReloadForServiceWorkerUpdate,
   shouldTriggerAppUpdate,
+  type VersionSyncDiagnosis,
 } from '../utils/updaterLogic';
 
 interface VersionPayload {
   version?: string;
+  buildHash?: string;
   buildId?: string;
+  schemaVersion?: number;
+  builtAt?: string;
+}
+
+export interface ServerManifestSnapshot {
+  version: string | null;
+  buildHash: string | null;
+  buildId: string | null;
+  schemaVersion: number | null;
+  source: '/api/version' | '/version.json' | 'sse' | null;
+  checkedAt: string | null;
+  error: string | null;
+}
+
+export interface ServiceWorkerDiagnosticInfo {
+  supported: boolean;
+  registrationsCount: number;
+  controllerState: string | null;
+  waitingPresent: boolean;
+  installingPresent: boolean;
+  updateViaCache: string | null;
+  cacheBuckets: string[];
+}
+
+export interface VersionDiagnosticsBundle {
+  clientVersion: string;
+  clientBuildHash: string;
+  clientSchemaVersion: number;
+  runtimeMode: 'PWA Standalone' | 'Browser Web';
+  serverManifest: ServerManifestSnapshot;
+  swInfo: ServiceWorkerDiagnosticInfo;
+  diagnosis: VersionSyncDiagnosis;
 }
 
 interface ReloadAttemptState {
@@ -24,6 +62,44 @@ interface ReloadAttemptState {
 }
 
 const VERSION_BC_NAME = 'cbt_app_version_sync_v1';
+
+async function inspectSwAndCaches(): Promise<ServiceWorkerDiagnosticInfo> {
+  const info: ServiceWorkerDiagnosticInfo = {
+    supported: typeof navigator !== 'undefined' && 'serviceWorker' in navigator,
+    registrationsCount: 0,
+    controllerState: null,
+    waitingPresent: false,
+    installingPresent: false,
+    updateViaCache: null,
+    cacheBuckets: [],
+  };
+
+  try {
+    if (info.supported) {
+      info.controllerState = navigator.serviceWorker.controller?.state ?? null;
+      const regs = await navigator.serviceWorker.getRegistrations().catch(() => []);
+      info.registrationsCount = regs.length;
+      const primary = regs[0];
+      if (primary) {
+        info.waitingPresent = Boolean(primary.waiting);
+        info.installingPresent = Boolean(primary.installing);
+        info.updateViaCache = primary.updateViaCache ?? null;
+      }
+    }
+  } catch {
+    // Ignore SW inspection errors
+  }
+
+  try {
+    if (typeof window !== 'undefined' && 'caches' in window) {
+      info.cacheBuckets = await window.caches.keys();
+    }
+  } catch {
+    // Ignore Cache Storage API errors
+  }
+
+  return info;
+}
 
 async function clearAllStaleAppCaches(unregisterServiceWorkers: boolean): Promise<void> {
   try {
@@ -61,6 +137,44 @@ async function clearAllStaleAppCaches(unregisterServiceWorkers: boolean): Promis
   }
 }
 
+async function fetchServerVersionManifest(): Promise<{
+  payload: VersionPayload;
+  source: '/api/version' | '/version.json';
+} | null> {
+  const cb = Date.now();
+  try {
+    const res = await fetch(`/api/version?_cb=${cb}`, {
+      cache: 'no-store',
+      headers: { 'Cache-Control': 'no-cache' },
+    });
+    if (res.ok) {
+      const payload = (await res.json()) as VersionPayload;
+      if (payload && (payload.version || payload.buildHash || payload.buildId)) {
+        return { payload, source: '/api/version' };
+      }
+    }
+  } catch {
+    // Fallback to static /version.json
+  }
+
+  try {
+    const fallbackRes = await fetch(`/version.json?_cb=${cb}`, {
+      cache: 'no-store',
+      headers: { 'Cache-Control': 'no-cache' },
+    });
+    if (fallbackRes.ok) {
+      const payload = (await fallbackRes.json()) as VersionPayload;
+      if (payload && (payload.version || payload.buildHash || payload.buildId)) {
+        return { payload, source: '/version.json' };
+      }
+    }
+  } catch {
+    // Unreachable / offline
+  }
+
+  return null;
+}
+
 function readReloadAttempts(): ReloadAttemptState | null {
   try {
     const raw = window.sessionStorage.getItem(RELOAD_ATTEMPTS_STORAGE_KEY);
@@ -79,64 +193,126 @@ function readReloadAttempts(): ReloadAttemptState | null {
   return null;
 }
 
-export function useAppUpdater(isExamActive: boolean, remotePulseVersion?: string | null) {
+export function useAppUpdater(
+  isExamActive: boolean,
+  remotePulseVersion?: string | null,
+  remotePulseBuildHash?: string | null
+) {
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const [isReloading, setIsReloading] = useState(false);
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
   const [latestKnownVersion, setLatestKnownVersion] = useState<string>(APP_VERSION);
+  const [serverManifest, setServerManifest] = useState<ServerManifestSnapshot>({
+    version: null,
+    buildHash: null,
+    buildId: null,
+    schemaVersion: null,
+    source: null,
+    checkedAt: null,
+    error: null,
+  });
+  const [swInfo, setSwInfo] = useState<ServiceWorkerDiagnosticInfo>({
+    supported: typeof navigator !== 'undefined' && 'serviceWorker' in navigator,
+    registrationsCount: 0,
+    controllerState: null,
+    waitingPresent: false,
+    installingPresent: false,
+    updateViaCache: null,
+    cacheBuckets: [],
+  });
 
   const examActiveRef = useRef(isExamActive);
-  const baselineBuildIdRef = useRef<string | null>(null);
-  const pendingTargetRef = useRef<{ version?: string; buildId?: string; forceCacheBreak?: boolean } | null>(null);
+  const pendingTargetRef = useRef<{
+    version?: string;
+    buildId?: string;
+    buildHash?: string;
+    forceCacheBreak?: boolean;
+  } | null>(null);
   const hasTriggeredRef = useRef(false);
   const bcRef = useRef<BroadcastChannel | null>(null);
+  const reloadTimerRef = useRef<number | null>(null);
+
+  const runtimeMode: 'PWA Standalone' | 'Browser Web' = useMemo(() => {
+    if (typeof window === 'undefined') return 'Browser Web';
+    const isStandalone =
+      window.matchMedia?.('(display-mode: standalone)').matches ||
+      (window.navigator as unknown as { standalone?: boolean }).standalone === true;
+    return isStandalone ? 'PWA Standalone' : 'Browser Web';
+  }, []);
 
   const triggerSmoothReload = useCallback(
-    (target?: { version?: string; buildId?: string; forceCacheBreak?: boolean }) => {
+    (target?: {
+      version?: string;
+      buildId?: string;
+      buildHash?: string;
+      forceCacheBreak?: boolean;
+    }) => {
       if (hasTriggeredRef.current) return;
       hasTriggeredRef.current = true;
 
       const targetVersion = (target?.version || '').trim();
-      const targetBuild = (target?.buildId || '').trim();
+      const targetBuild = (target?.buildHash || target?.buildId || '').trim();
+
+      try {
+        migrateLegacyStorageSchema(window.localStorage, APP_SCHEMA_VERSION);
+      } catch {
+        // Ignore storage errors
+      }
 
       try {
         if (targetVersion) {
+          window.localStorage.setItem(APP_VERSION_STORAGE_KEY, targetVersion);
           window.sessionStorage.setItem(RELOADED_VERSION_STORAGE_KEY, targetVersion);
+          const attemptKey = targetBuild ? `${targetVersion}:${targetBuild}` : targetVersion;
           const prevAttempts = readReloadAttempts();
           const nextCount =
-            prevAttempts && prevAttempts.version === targetVersion ? prevAttempts.count + 1 : 1;
+            prevAttempts && prevAttempts.version === attemptKey ? prevAttempts.count + 1 : 1;
           window.sessionStorage.setItem(
             RELOAD_ATTEMPTS_STORAGE_KEY,
-            JSON.stringify({ version: targetVersion, count: nextCount, atMs: Date.now() })
+            JSON.stringify({ version: attemptKey, count: nextCount, atMs: Date.now() })
           );
         }
         if (targetBuild) {
+          window.localStorage.setItem(APP_BUILD_HASH_STORAGE_KEY, targetBuild);
           window.sessionStorage.setItem(RELOADED_BUILD_STORAGE_KEY, targetBuild);
         }
         if (!targetVersion && !targetBuild) {
           window.sessionStorage.setItem(SW_RELOAD_TIMESTAMP_KEY, String(Date.now()));
         }
       } catch {
-        // Ignore sessionStorage restrictions
+        // Ignore sessionStorage/localStorage restrictions
       }
 
       setUpdateAvailable(true);
       setIsReloading(true);
 
-      // On version mismatch or explicit cache-break, unregister stale SW so the browser
-      // cannot serve cached old index.html, then navigate with a fresh _pwa_v param.
-      const shouldUnregisterSw = Boolean(targetVersion || target?.forceCacheBreak);
-      clearAllStaleAppCaches(shouldUnregisterSw).finally(() => {
-        window.setTimeout(() => {
-          const cacheKey = targetVersion || targetBuild || String(Date.now());
+      const shouldUnregisterSw = Boolean(targetVersion || targetBuild || target?.forceCacheBreak);
+      const cacheKey = targetBuild || targetVersion || String(Date.now());
+
+      clearAllStaleAppCaches(shouldUnregisterSw)
+        .then(async () => {
           if (shouldUnregisterSw) {
-            const bustUrl = buildCacheBustUrl(window.location.href, cacheKey);
-            window.location.replace(bustUrl);
-          } else {
-            window.location.reload();
+            try {
+              await fetch(buildCacheBustUrl(window.location.href, cacheKey), {
+                cache: 'reload',
+              });
+            } catch {
+              // Ignore warm-fetch failures when offline
+            }
           }
-        }, 400);
-      });
+        })
+        .finally(() => {
+          if (reloadTimerRef.current !== null) window.clearTimeout(reloadTimerRef.current);
+          reloadTimerRef.current = window.setTimeout(() => {
+            reloadTimerRef.current = null;
+            if (shouldUnregisterSw) {
+              const bustUrl = buildCacheBustUrl(window.location.href, cacheKey);
+              window.location.replace(bustUrl);
+            } else {
+              window.location.reload();
+            }
+          }, 350);
+        });
     },
     []
   );
@@ -150,60 +326,123 @@ export function useAppUpdater(isExamActive: boolean, remotePulseVersion?: string
     }
   }, [isExamActive, triggerSmoothReload]);
 
-  // React to Firestore cbt_sync_pulse version changes across all installed PWA/web devices
+  // React to Firestore cbt_sync_pulse version/buildHash updates by verifying authoritative server manifest
   useEffect(() => {
     const serverVer = (remotePulseVersion || '').trim();
-    if (!serverVer || hasTriggeredRef.current) return;
+    const pulseHash = (remotePulseBuildHash || '').trim();
+    if ((!serverVer && !pulseHash) || hasTriggeredRef.current) return;
 
-    if (isNewerAppVersion(serverVer, APP_VERSION)) {
+    if (serverVer && isNewerAppVersion(serverVer, APP_VERSION)) {
       setLatestKnownVersion(serverVer);
     }
 
-    let alreadyReloadedTarget: string | null = null;
-    try {
-      alreadyReloadedTarget = window.sessionStorage.getItem(RELOADED_VERSION_STORAGE_KEY);
-    } catch {
-      // Ignore
-    }
-    const attempts = readReloadAttempts();
-
+    // If authoritative server manifest already matches this client's buildHash & version,
+    // ignore stale buildHash values coming from an older device's Firestore pulse write.
+    const serverVersionKnown = serverManifest.version;
+    const serverHashKnown = serverManifest.buildHash;
     if (
-      shouldTriggerAppUpdate({
-        clientVersion: APP_VERSION,
-        serverVersion: serverVer,
-        alreadyReloadedTarget,
-        versionReloadAttempts:
-          attempts && attempts.version === serverVer ? attempts.count : undefined,
-        lastReloadAttemptAtMs:
-          attempts && attempts.version === serverVer ? attempts.atMs : undefined,
-      })
+      serverHashKnown &&
+      serverHashKnown === APP_BUILD_HASH &&
+      (!serverVer || !isNewerAppVersion(serverVer, APP_VERSION))
     ) {
-      const target = { version: serverVer, forceCacheBreak: true };
-      if (examActiveRef.current) {
-        pendingTargetRef.current = target;
-        setUpdateAvailable(true);
-      } else {
-        triggerSmoothReload(target);
-      }
+      return;
     }
-  }, [remotePulseVersion, triggerSmoothReload]);
 
-  useEffect(() => {
+    // If pulse announces a different version/hash, check authoritative server manifest right away
     let cancelled = false;
+    void fetchServerVersionManifest().then((manifest) => {
+      if (cancelled || hasTriggeredRef.current || !manifest) return;
+      const authVer = (manifest.payload.version || '').trim();
+      const authHash = (manifest.payload.buildHash || manifest.payload.buildId || '').trim();
+      setServerManifest({
+        version: authVer || null,
+        buildHash: authHash || null,
+        buildId: (manifest.payload.buildId || authHash || '').trim() || null,
+        schemaVersion:
+          typeof manifest.payload.schemaVersion === 'number'
+            ? manifest.payload.schemaVersion
+            : null,
+        source: manifest.source,
+        checkedAt: new Date().toISOString(),
+        error: null,
+      });
 
-    const evaluateServerPayload = (data: VersionPayload, broadcastToTabs = true) => {
-      if (cancelled || hasTriggeredRef.current) return;
+      let alreadyReloadedTarget: string | null = null;
+      let alreadyReloadedBuildId: string | null = null;
+      try {
+        alreadyReloadedTarget = window.sessionStorage.getItem(RELOADED_VERSION_STORAGE_KEY);
+        alreadyReloadedBuildId = window.sessionStorage.getItem(RELOADED_BUILD_STORAGE_KEY);
+      } catch {
+        // Ignore
+      }
+      const attempts = readReloadAttempts();
+      const attemptKey = authHash ? `${authVer}:${authHash}` : authVer;
+
+      if (
+        shouldTriggerAppUpdate({
+          clientVersion: APP_VERSION,
+          serverVersion: authVer || serverVersionKnown || APP_VERSION,
+          alreadyReloadedTarget,
+          clientBuildHash: APP_BUILD_HASH,
+          serverBuildHash: authHash,
+          alreadyReloadedBuildId,
+          versionReloadAttempts:
+            attempts && attempts.version === attemptKey ? attempts.count : undefined,
+          lastReloadAttemptAtMs:
+            attempts && attempts.version === attemptKey ? attempts.atMs : undefined,
+          maxAttempts: 3,
+          retryCooldownMs: 6_000,
+        })
+      ) {
+        const target = {
+          version: authVer || APP_VERSION,
+          buildHash: authHash || undefined,
+          forceCacheBreak: true,
+        };
+        if (examActiveRef.current) {
+          pendingTargetRef.current = target;
+          setUpdateAvailable(true);
+        } else {
+          triggerSmoothReload(target);
+        }
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    remotePulseVersion,
+    remotePulseBuildHash,
+    serverManifest.version,
+    serverManifest.buildHash,
+    triggerSmoothReload,
+  ]);
+
+  const evaluateServerPayload = useCallback(
+    (
+      data: VersionPayload,
+      source: '/api/version' | '/version.json' | 'sse',
+      broadcastToTabs = true
+    ) => {
+      if (hasTriggeredRef.current) return;
 
       const serverVersion = (data.version || '').trim();
-      const serverBuildId = (data.buildId || '').trim();
+      const serverBuildHash = (data.buildHash || data.buildId || '').trim();
+      const serverBuildId = (data.buildId || data.buildHash || '').trim();
+
+      setServerManifest({
+        version: serverVersion || null,
+        buildHash: serverBuildHash || null,
+        buildId: serverBuildId || null,
+        schemaVersion: typeof data.schemaVersion === 'number' ? data.schemaVersion : null,
+        source,
+        checkedAt: new Date().toISOString(),
+        error: null,
+      });
 
       if (serverVersion && isNewerAppVersion(serverVersion, APP_VERSION)) {
         setLatestKnownVersion(serverVersion);
-      }
-
-      // Record baseline buildId on the first healthy handshake after page load
-      if (!baselineBuildIdRef.current && serverBuildId) {
-        baselineBuildIdRef.current = serverBuildId;
       }
 
       let alreadyReloadedTarget: string | null = null;
@@ -215,25 +454,31 @@ export function useAppUpdater(isExamActive: boolean, remotePulseVersion?: string
         // Ignore
       }
       const attempts = readReloadAttempts();
+      const attemptKey = serverBuildHash
+        ? `${serverVersion}:${serverBuildHash}`
+        : serverVersion;
 
       const shouldUpdate = shouldTriggerAppUpdate({
         clientVersion: APP_VERSION,
         serverVersion,
         alreadyReloadedTarget,
-        clientBuildId: baselineBuildIdRef.current,
-        serverBuildId,
+        clientBuildHash: APP_BUILD_HASH,
+        serverBuildHash,
         alreadyReloadedBuildId,
         versionReloadAttempts:
-          attempts && attempts.version === serverVersion ? attempts.count : undefined,
+          attempts && attempts.version === attemptKey ? attempts.count : undefined,
         lastReloadAttemptAtMs:
-          attempts && attempts.version === serverVersion ? attempts.atMs : undefined,
+          attempts && attempts.version === attemptKey ? attempts.atMs : undefined,
+        maxAttempts: 3,
+        retryCooldownMs: 6_000,
       });
 
       if (shouldUpdate) {
         const target = {
           version: serverVersion,
           buildId: serverBuildId,
-          forceCacheBreak: Boolean(serverVersion && serverVersion !== APP_VERSION),
+          buildHash: serverBuildHash,
+          forceCacheBreak: true,
         };
         if (broadcastToTabs && bcRef.current) {
           try {
@@ -249,18 +494,28 @@ export function useAppUpdater(isExamActive: boolean, remotePulseVersion?: string
           triggerSmoothReload(target);
         }
       }
-    };
+    },
+    [triggerSmoothReload]
+  );
+
+  useEffect(() => {
+    let cancelled = false;
 
     const checkServerVersion = async () => {
-      if (hasTriggeredRef.current) return;
-      try {
-        const res = await fetch('/api/version', { cache: 'no-store' });
-        if (!res.ok) return;
-        const data = (await res.json()) as VersionPayload;
-        evaluateServerPayload(data);
-      } catch {
-        // Ignore transient network errors
+      if (cancelled || hasTriggeredRef.current) return;
+      const manifest = await fetchServerVersionManifest();
+      if (cancelled) return;
+      if (manifest) {
+        evaluateServerPayload(manifest.payload, manifest.source);
+      } else {
+        setServerManifest((prev) => ({
+          ...prev,
+          checkedAt: new Date().toISOString(),
+          error: 'Endpoint manifest server tidak terjangkau',
+        }));
       }
+      const nextSw = await inspectSwAndCaches();
+      if (!cancelled) setSwInfo(nextSw);
     };
 
     // Real-time SSE listener for instant (<500ms) push updates whenever any build or file changes
@@ -269,9 +524,10 @@ export function useAppUpdater(isExamActive: boolean, remotePulseVersion?: string
       try {
         es = new EventSource('/api/version-stream');
         const handleSsePayload = (ev: MessageEvent) => {
+          if (cancelled) return;
           try {
             const parsed = JSON.parse(String(ev.data || '{}')) as VersionPayload;
-            evaluateServerPayload(parsed);
+            evaluateServerPayload(parsed, 'sse');
           } catch {
             // Ignore malformed keepalive/event payloads
           }
@@ -289,9 +545,18 @@ export function useAppUpdater(isExamActive: boolean, remotePulseVersion?: string
         const bc = new BroadcastChannel(VERSION_BC_NAME);
         bcRef.current = bc;
         bc.onmessage = (ev) => {
-          const msg = ev.data as { type?: string; version?: string; buildId?: string } | null;
+          const msg = ev.data as {
+            type?: string;
+            version?: string;
+            buildId?: string;
+            buildHash?: string;
+          } | null;
           if (msg?.type === 'UPDATE_AVAILABLE') {
-            evaluateServerPayload({ version: msg.version, buildId: msg.buildId }, false);
+            evaluateServerPayload(
+              { version: msg.version, buildId: msg.buildId, buildHash: msg.buildHash },
+              'sse',
+              false
+            );
           }
         };
       } catch {
@@ -299,13 +564,20 @@ export function useAppUpdater(isExamActive: boolean, remotePulseVersion?: string
       }
     }
 
-    const triggerSwReloadGuarded = (swVersion?: string) => {
-      if (swVersion && swVersion !== APP_VERSION) {
+    const triggerSwReloadGuarded = (swVersion?: string, swBuildHash?: string) => {
+      const hashMismatch = Boolean(swBuildHash && swBuildHash !== APP_BUILD_HASH);
+      const versionMismatch = Boolean(swVersion && swVersion !== APP_VERSION);
+      if (versionMismatch || hashMismatch) {
+        const target = {
+          version: swVersion || APP_VERSION,
+          buildHash: swBuildHash || undefined,
+          forceCacheBreak: true,
+        };
         if (examActiveRef.current) {
-          pendingTargetRef.current = { version: swVersion, forceCacheBreak: true };
+          pendingTargetRef.current = target;
           setUpdateAvailable(true);
         } else {
-          triggerSmoothReload({ version: swVersion, forceCacheBreak: true });
+          triggerSmoothReload(target);
         }
         return;
       }
@@ -342,9 +614,13 @@ export function useAppUpdater(isExamActive: boolean, remotePulseVersion?: string
     const onSwMessage = (ev: MessageEvent) => {
       if (ev.data?.type === 'SW_ACTIVATED') {
         const swVer = typeof ev.data?.version === 'string' ? ev.data.version : undefined;
-        triggerSwReloadGuarded(swVer);
+        const swHash = typeof ev.data?.buildHash === 'string' ? ev.data.buildHash : undefined;
+        triggerSwReloadGuarded(swVer, swHash);
       }
     };
+
+    let swReg: ServiceWorkerRegistration | null = null;
+    let onUpdateFound: (() => void) | null = null;
 
     // Service Worker update detection in production builds (installed PWAs + web)
     if ('serviceWorker' in navigator && import.meta.env.PROD) {
@@ -354,20 +630,26 @@ export function useAppUpdater(isExamActive: boolean, remotePulseVersion?: string
       navigator.serviceWorker
         .getRegistration()
         .then((reg) => {
-          if (!reg) return;
+          if (!reg || cancelled) return;
+          swReg = reg;
           if (reg.waiting && navigator.serviceWorker.controller) {
             reg.waiting.postMessage({ type: 'SKIP_WAITING' });
           }
-          reg.addEventListener('updatefound', () => {
+          onUpdateFound = () => {
             const installing = reg.installing;
             if (!installing) return;
-            installing.addEventListener('statechange', () => {
+            const onStateChange = () => {
               if (installing.state === 'installed' && navigator.serviceWorker.controller) {
+                installing.removeEventListener('statechange', onStateChange);
                 installing.postMessage({ type: 'SKIP_WAITING' });
                 triggerSwReloadGuarded();
+              } else if (installing.state === 'redundant' || installing.state === 'activated') {
+                installing.removeEventListener('statechange', onStateChange);
               }
-            });
-          });
+            };
+            installing.addEventListener('statechange', onStateChange);
+          };
+          reg.addEventListener('updatefound', onUpdateFound);
         })
         .catch(() => {});
 
@@ -380,10 +662,12 @@ export function useAppUpdater(isExamActive: boolean, remotePulseVersion?: string
     }
 
     // Immediate baseline check + fast 10s fallback polling + focus/online/pageshow triggers
-    checkServerVersion();
-    const intervalId = window.setInterval(checkServerVersion, 10_000);
+    void checkServerVersion();
+    const intervalId = window.setInterval(() => {
+      void checkServerVersion();
+    }, 10_000);
     const onFocusOrOnline = () => {
-      checkServerVersion();
+      void checkServerVersion();
       if ('serviceWorker' in navigator && import.meta.env.PROD) {
         navigator.serviceWorker
           .getRegistration()
@@ -406,6 +690,10 @@ export function useAppUpdater(isExamActive: boolean, remotePulseVersion?: string
       cancelled = true;
       window.clearInterval(intervalId);
       if (swIntervalId !== null) window.clearInterval(swIntervalId);
+      if (reloadTimerRef.current !== null) {
+        window.clearTimeout(reloadTimerRef.current);
+        reloadTimerRef.current = null;
+      }
       document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('focus', onFocusOrOnline);
       window.removeEventListener('online', onFocusOrOnline);
@@ -413,6 +701,9 @@ export function useAppUpdater(isExamActive: boolean, remotePulseVersion?: string
       if ('serviceWorker' in navigator && import.meta.env.PROD) {
         navigator.serviceWorker.removeEventListener('controllerchange', onControllerChange);
         navigator.serviceWorker.removeEventListener('message', onSwMessage);
+        if (swReg && onUpdateFound) {
+          swReg.removeEventListener('updatefound', onUpdateFound);
+        }
       }
       if (es) es.close();
       if (bcRef.current) {
@@ -420,7 +711,43 @@ export function useAppUpdater(isExamActive: boolean, remotePulseVersion?: string
         bcRef.current = null;
       }
     };
-  }, [triggerSmoothReload]);
+  }, [evaluateServerPayload, triggerSmoothReload]);
+
+  // Manual diagnostic inspection without forcing reload unless mismatch demands it
+  const refreshDiagnostics = useCallback(async () => {
+    setIsCheckingUpdate(true);
+    try {
+      if ('serviceWorker' in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations().catch(() => []);
+        await Promise.all(regs.map((r) => r.update().catch(() => {})));
+      }
+      const manifest = await fetchServerVersionManifest();
+      if (manifest) {
+        setServerManifest({
+          version: (manifest.payload.version || '').trim() || null,
+          buildHash: (manifest.payload.buildHash || manifest.payload.buildId || '').trim() || null,
+          buildId: (manifest.payload.buildId || manifest.payload.buildHash || '').trim() || null,
+          schemaVersion:
+            typeof manifest.payload.schemaVersion === 'number'
+              ? manifest.payload.schemaVersion
+              : null,
+          source: manifest.source,
+          checkedAt: new Date().toISOString(),
+          error: null,
+        });
+      } else {
+        setServerManifest((prev) => ({
+          ...prev,
+          checkedAt: new Date().toISOString(),
+          error: 'Manifest server tidak dapat dijangkau',
+        }));
+      }
+      const nextSw = await inspectSwAndCaches();
+      setSwInfo(nextSw);
+    } finally {
+      setIsCheckingUpdate(false);
+    }
+  }, []);
 
   // Manual 1-tap hard cache purge & version check for installed PWAs
   const checkAndApplyUpdateNow = useCallback(
@@ -436,25 +763,36 @@ export function useAppUpdater(isExamActive: boolean, remotePulseVersion?: string
           await Promise.all(regs.map((r) => r.update().catch(() => {})));
         }
 
-        const res = await fetch('/api/version', { cache: 'no-store' }).catch(() => null);
-        if (res && res.ok) {
-          const data = (await res.json()) as VersionPayload;
+        const manifest = await fetchServerVersionManifest();
+        if (manifest) {
+          const data = manifest.payload;
           const serverVer = (data.version || '').trim();
-          const serverBuild = (data.buildId || '').trim();
+          const serverHash = (data.buildHash || data.buildId || '').trim();
+          setServerManifest({
+            version: serverVer || null,
+            buildHash: serverHash || null,
+            buildId: (data.buildId || serverHash || '').trim() || null,
+            schemaVersion: typeof data.schemaVersion === 'number' ? data.schemaVersion : null,
+            source: manifest.source,
+            checkedAt: new Date().toISOString(),
+            error: null,
+          });
+
           const remoteVer = (remotePulseVersion || '').trim();
           const targetVer =
             remoteVer && isNewerAppVersion(remoteVer, serverVer || APP_VERSION)
               ? remoteVer
               : serverVer;
 
-          const hasUpdate =
-            Boolean(targetVer && targetVer !== APP_VERSION && !isNewerAppVersion(APP_VERSION, targetVer)) ||
-            Boolean(serverBuild && baselineBuildIdRef.current && serverBuild !== baselineBuildIdRef.current);
+          const hasVersionDiff = Boolean(
+            targetVer && targetVer !== APP_VERSION && !isNewerAppVersion(APP_VERSION, targetVer)
+          );
+          const hasHashDiff = Boolean(serverHash && serverHash !== APP_BUILD_HASH);
 
-          if (hasUpdate || forceRefreshEvenIfSameVersion) {
+          if (hasVersionDiff || hasHashDiff || forceRefreshEvenIfSameVersion) {
             triggerSmoothReload({
               version: targetVer || APP_VERSION,
-              buildId: serverBuild || undefined,
+              buildHash: serverHash || undefined,
               forceCacheBreak: true,
             });
             return 'updated';
@@ -471,12 +809,72 @@ export function useAppUpdater(isExamActive: boolean, remotePulseVersion?: string
     [remotePulseVersion, triggerSmoothReload]
   );
 
+  // Explicit force-reset button in diagnostics UI: clears reload retry guards + all caches + reloads
+  const forceHardResetAndReload = useCallback(async () => {
+    if (examActiveRef.current) {
+      setUpdateAvailable(true);
+      return;
+    }
+    try {
+      window.sessionStorage.removeItem(RELOADED_VERSION_STORAGE_KEY);
+      window.sessionStorage.removeItem(RELOADED_BUILD_STORAGE_KEY);
+      window.sessionStorage.removeItem(RELOAD_ATTEMPTS_STORAGE_KEY);
+      window.sessionStorage.removeItem(SW_RELOAD_TIMESTAMP_KEY);
+      window.localStorage.removeItem('cbt_app_schema_version');
+      window.localStorage.removeItem(APP_VERSION_STORAGE_KEY);
+      window.localStorage.removeItem(APP_BUILD_HASH_STORAGE_KEY);
+    } catch {
+      // Ignore storage errors
+    }
+    hasTriggeredRef.current = false;
+    triggerSmoothReload({
+      version: serverManifest.version || APP_VERSION,
+      buildHash: serverManifest.buildHash || String(Date.now()),
+      forceCacheBreak: true,
+    });
+  }, [serverManifest.buildHash, serverManifest.version, triggerSmoothReload]);
+
+  const diagnosis = useMemo(
+    () =>
+      diagnoseVersionSync({
+        clientVersion: APP_VERSION,
+        clientBuildHash: APP_BUILD_HASH,
+        serverVersion: serverManifest.version,
+        serverBuildHash: serverManifest.buildHash,
+        pulseVersion: remotePulseVersion,
+        pulseBuildHash: remotePulseBuildHash,
+      }),
+    [
+      serverManifest.version,
+      serverManifest.buildHash,
+      remotePulseVersion,
+      remotePulseBuildHash,
+    ]
+  );
+
+  const diagnostics: VersionDiagnosticsBundle = useMemo(
+    () => ({
+      clientVersion: APP_VERSION,
+      clientBuildHash: APP_BUILD_HASH,
+      clientSchemaVersion: APP_SCHEMA_VERSION,
+      runtimeMode,
+      serverManifest,
+      swInfo,
+      diagnosis,
+    }),
+    [runtimeMode, serverManifest, swInfo, diagnosis]
+  );
+
   return {
     updateAvailable,
     isReloading,
     isCheckingUpdate,
     currentVersion: APP_VERSION,
+    currentBuildHash: APP_BUILD_HASH,
     latestKnownVersion,
+    diagnostics,
+    refreshDiagnostics,
     checkAndApplyUpdateNow,
+    forceHardResetAndReload,
   };
 }

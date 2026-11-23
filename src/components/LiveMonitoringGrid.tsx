@@ -111,10 +111,10 @@ const StudentVideoTile: React.FC<StudentVideoTileProps> = ({
           </div>
           <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/55">
             <div
-              className={`h-full transition-all duration-150 ${
+              className={`h-full w-full origin-left transition-transform duration-150 ${
                 session.audioLevel > 65 ? 'bg-amber-500' : 'bg-emerald-600'
               }`}
-              style={{ width: `${Math.min(100, Math.max(4, session.audioLevel))}%` }}
+              style={{ transform: `scaleX(${Math.min(1, Math.max(0.04, session.audioLevel / 100))})` }}
             />
           </div>
         </div>

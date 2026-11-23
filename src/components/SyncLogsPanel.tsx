@@ -12,6 +12,7 @@ import {
   Globe,
   Database,
   History,
+  Cpu,
 } from 'lucide-react';
 import type {
   SyncLogEntity,
@@ -25,6 +26,7 @@ interface SyncLogsPanelProps {
   logs: SyncLogEntry[];
   syncInfo: SyncStatusInfo;
   onForceSync?: () => Promise<void>;
+  onOpenDiagnostics?: () => void;
 }
 
 const ENTITY_OPTIONS: Array<'ALL' | SyncLogEntity> = [
@@ -74,6 +76,7 @@ export const SyncLogsPanel: React.FC<SyncLogsPanelProps> = ({
   logs,
   syncInfo,
   onForceSync,
+  onOpenDiagnostics,
 }) => {
   const [statusFilter, setStatusFilter] = useState<'ALL' | SyncLogStatus>('ALL');
   const [entityFilter, setEntityFilter] = useState<'ALL' | SyncLogEntity>('ALL');
@@ -217,11 +220,21 @@ export const SyncLogsPanel: React.FC<SyncLogsPanelProps> = ({
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            {onOpenDiagnostics && (
+              <button
+                type="button"
+                onClick={onOpenDiagnostics}
+                className="btn-press min-h-[40px] inline-flex items-center gap-1.5 rounded-xl border border-white/75 bg-white/70 px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-white/95 whitespace-nowrap"
+              >
+                <Cpu className="h-3.5 w-3.5 text-emerald-700" />
+                <span>Diagnostik Versi &amp; Hash</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={handleExportCsv}
               disabled={logs.length === 0}
-              className="btn-press inline-flex items-center gap-1.5 rounded-xl border border-white/75 bg-white/70 px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-white/95 disabled:opacity-50"
+              className="btn-press min-h-[40px] inline-flex items-center gap-1.5 rounded-xl border border-white/75 bg-white/70 px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-white/95 disabled:opacity-50 whitespace-nowrap"
             >
               <Download className="h-3.5 w-3.5 text-emerald-700" />
               <span>Ekspor Log CSV</span>
@@ -231,7 +244,7 @@ export const SyncLogsPanel: React.FC<SyncLogsPanelProps> = ({
                 type="button"
                 onClick={handleManualSync}
                 disabled={syncingNow}
-                className="btn-press inline-flex items-center gap-1.5 rounded-xl bg-emerald-700 px-3.5 py-2 text-xs font-bold text-white hover:bg-emerald-800 disabled:opacity-60"
+                className="btn-press min-h-[40px] inline-flex items-center gap-1.5 rounded-xl bg-emerald-700 px-3.5 py-2 text-xs font-bold text-white hover:bg-emerald-800 disabled:opacity-60 whitespace-nowrap"
               >
                 <RefreshCw className={`h-3.5 w-3.5 ${syncingNow ? 'animate-spin' : ''}`} />
                 <span>{syncingNow ? 'Memverifikasi...' : 'Sinkronkan & Verifikasi'}</span>

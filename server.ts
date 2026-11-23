@@ -30,6 +30,7 @@ import {
   type PetClientAction,
 } from './src/utils/virtualPetUtils.ts';
 import { APP_VERSION } from './src/config/version.ts';
+import { computeRuntimeVersionManifest } from './buildHash.ts';
 
 export { APP_VERSION };
 
@@ -325,73 +326,14 @@ async function callGeminiWithResilience(ai: GoogleGenAI, opts: ResilienceCallOpt
   throw lastErr;
 }
 
-function readLiveAppVersion(): string {
-  try {
-    const versionFile = path.resolve(__dirname, 'src/config/version.ts');
-    const raw = fs.readFileSync(versionFile, 'utf8');
-    const m = raw.match(/APP_VERSION\s*=\s*['"]([^'"]+)['"]/);
-    if (m?.[1]) return m[1];
-  } catch {
-    // Fallback to imported APP_VERSION
-  }
-  return APP_VERSION;
-}
-
-function collectStatEntries(dirPath: string, out: string[]) {
-  if (!fs.existsSync(dirPath)) return;
-  const entries = fs.readdirSync(dirPath, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
-  for (const entry of entries) {
-    if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
-    const full = path.join(dirPath, entry.name);
-    if (entry.isDirectory()) {
-      collectStatEntries(full, out);
-    } else if (!entry.name.endsWith('.test.ts') && !entry.name.endsWith('.test.tsx')) {
-      try {
-        const st = fs.statSync(full);
-        out.push(`${path.relative(__dirname, full)}:${Math.trunc(st.mtimeMs)}:${st.size}`);
-      } catch {
-        // Ignore transient file reads
-      }
-    }
-  }
-}
-
-function computeVersionSnapshot(): { version: string; buildId: string } {
-  const version = readLiveAppVersion();
-  const hash = crypto.createHash('sha256').update(`v:${version}`);
-
-  const distIndex = path.resolve(__dirname, 'dist/index.html');
-  if (process.env.NODE_ENV === 'production' && fs.existsSync(distIndex)) {
-    try {
-      hash.update(fs.readFileSync(distIndex, 'utf8'));
-      const distSw = path.resolve(__dirname, 'dist/sw.js');
-      if (fs.existsSync(distSw)) {
-        hash.update(fs.readFileSync(distSw, 'utf8'));
-      }
-    } catch {
-      // Ignore
-    }
-  } else {
-    const statList: string[] = [];
-    collectStatEntries(path.resolve(__dirname, 'src'), statList);
-    for (const rootFile of ['index.html', 'server.ts']) {
-      const p = path.resolve(__dirname, rootFile);
-      if (fs.existsSync(p)) {
-        try {
-          const st = fs.statSync(p);
-          statList.push(`${rootFile}:${Math.trunc(st.mtimeMs)}:${st.size}`);
-        } catch {
-          // Ignore
-        }
-      }
-    }
-    hash.update(statList.join('|'));
-  }
-
-  return {
-    version,
-    buildId: hash.digest('hex').slice(0, 16),
-  };
+function computeVersionSnapshot(): {
+  version: string;
+  buildId: string;
+  buildHash: string;
+  schemaVersion: number;
+  builtAt?: string;
+} {
+  return computeRuntimeVersionManifest(__dirname, process.env.NODE_ENV === 'production');
 }
 
 let lastBroadcastSnapshot = computeVersionSnapshot();
@@ -401,7 +343,7 @@ function broadcastVersionChangeIfChanged() {
   const next = computeVersionSnapshot();
   if (
     next.version === lastBroadcastSnapshot.version &&
-    next.buildId === lastBroadcastSnapshot.buildId
+    next.buildHash === lastBroadcastSnapshot.buildHash
   ) {
     return;
   }
@@ -431,7 +373,7 @@ try {
   if (fs.existsSync(srcDir)) {
     fs.watch(srcDir, { recursive: true }, (_ev, file) => scheduleVersionCheck(file));
   }
-  for (const singleFile of ['index.html', 'server.ts']) {
+  for (const singleFile of ['index.html', 'server.ts', 'vite.config.ts']) {
     const full = path.resolve(__dirname, singleFile);
     if (fs.existsSync(full)) {
       fs.watch(full, () => scheduleVersionCheck(singleFile));
@@ -445,17 +387,25 @@ try {
   // Some virtual filesystems do not support recursive fs.watch; /api/version polling remains active
 }
 
-// Fast version endpoint + real-time SSE stream for instant (<500ms) update detection
-app.get('/api/version', (_req, res) => {
-  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+function sendVersionManifest(_req: express.Request, res: express.Response) {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
   const snap = computeVersionSnapshot();
   lastBroadcastSnapshot = snap;
   res.json({
     version: snap.version,
     buildId: snap.buildId,
+    buildHash: snap.buildHash,
+    schemaVersion: snap.schemaVersion,
+    builtAt: snap.builtAt,
     serverTime: new Date().toISOString(),
   });
-});
+}
+
+// Fast version manifest endpoints + real-time SSE stream for instant (<500ms) update detection
+app.get('/api/version', sendVersionManifest);
+app.get('/version.json', sendVersionManifest);
 
 app.get('/api/version-stream', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
@@ -1426,13 +1376,12 @@ export function injectQuery(url, queryToInject) {
 
     app.use((req, res, next) => {
       const p = req.path;
-      if (
-        p === '/' ||
-        p === '/index.html' ||
-        p === '/sw.js' ||
-        p === '/dev-sw.js' ||
-        p === '/manifest.webmanifest'
-      ) {
+      if (p === '/manifest.webmanifest') {
+        res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-cache, must-revalidate, max-age=0');
+      } else if (p === '/' || p === '/index.html') {
+        res.setHeader('Cache-Control', 'no-cache, must-revalidate, max-age=0');
+      } else if (p === '/sw.js' || p === '/dev-sw.js' || p === '/version.json') {
         res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
         res.setHeader('Pragma', 'no-cache');
         res.setHeader('Expires', '0');
@@ -1444,34 +1393,40 @@ export function injectQuery(url, queryToInject) {
   } else {
     const distPath = path.resolve(__dirname, 'dist');
     if (fs.existsSync(distPath)) {
-      const noStoreFiles = new Set([
-        '/',
-        '/index.html',
-        '/sw.js',
-        '/registerSW.js',
-        '/manifest.webmanifest',
-      ]);
+      const noStoreFiles = new Set(['/sw.js', '/registerSW.js', '/version.json']);
+      const revalidateFiles = new Set(['/', '/index.html', '/manifest.webmanifest']);
       app.use(
         express.static(distPath, {
           setHeaders: (res, filePath) => {
             const rel = `/${path.relative(distPath, filePath).replace(/\\/g, '/')}`;
-            if (noStoreFiles.has(rel) || rel.endsWith('.html')) {
+            if (rel === '/manifest.webmanifest') {
+              res.setHeader('Content-Type', 'application/manifest+json; charset=utf-8');
+            }
+            if (noStoreFiles.has(rel)) {
               res.setHeader(
                 'Cache-Control',
                 'no-store, no-cache, must-revalidate, proxy-revalidate'
               );
               res.setHeader('Pragma', 'no-cache');
               res.setHeader('Expires', '0');
+            } else if (revalidateFiles.has(rel) || rel.endsWith('.html')) {
+              res.setHeader('Cache-Control', 'no-cache, must-revalidate, max-age=0');
             } else if (rel.startsWith('/assets/')) {
               res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
             }
           },
         })
       );
-      app.get('*', (_req, res) => {
-        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-        res.setHeader('Pragma', 'no-cache');
-        res.setHeader('Expires', '0');
+      app.get('*', (req, res) => {
+        if (
+          req.path.startsWith('/assets/') ||
+          /\.(js|mjs|css|map|woff2?|png|svg|ico)$/i.test(req.path)
+        ) {
+          res.setHeader('Cache-Control', 'no-store');
+          res.status(404).end();
+          return;
+        }
+        res.setHeader('Cache-Control', 'no-cache, must-revalidate, max-age=0');
         res.sendFile(path.join(distPath, 'index.html'));
       });
     }
