@@ -4,8 +4,10 @@ import './index.css';
 import { APP_BUILD_HASH, APP_SCHEMA_VERSION, APP_VERSION } from './config/version';
 import { migrateLegacyStorageSchema, stripCacheBustParam } from './utils/updaterLogic';
 import { initPWAInstallListener } from './hooks/usePWAInstall';
+import { syncDocumentDeviceAttributes } from './utils/deviceViewport';
 
 if (typeof window !== 'undefined') {
+  syncDocumentDeviceAttributes();
   initPWAInstallListener();
   // Run schema migration & incompatible legacy cache cleanup immediately on boot
   try {

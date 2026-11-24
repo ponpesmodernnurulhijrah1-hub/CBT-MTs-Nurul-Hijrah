@@ -1,5 +1,86 @@
 export type DeviceViewportClass = 'mobile' | 'tablet' | 'desktop';
 export type PwaDisplayMode = 'standalone' | 'browser';
+export type DevicePerfTier = 'high' | 'balanced' | 'lite';
+
+export interface DeviceHardwareSignals {
+  deviceType: DeviceViewportClass;
+  hardwareConcurrency?: number | null;
+  deviceMemory?: number | null;
+  saveData?: boolean;
+  effectiveType?: string | null;
+  isCoarsePointer?: boolean;
+  prefersReducedMotion?: boolean;
+}
+
+/**
+ * Classifies the active device into a GPU/CPU rendering tier so entry-level phones
+ * receive zero-lag 60fps pure-2D composited transitions while higher-end devices
+ * get full refractive Hyper-Liquid Glass effects.
+ */
+export function resolveDevicePerfTier(signals: DeviceHardwareSignals): DevicePerfTier {
+  if (signals.prefersReducedMotion || signals.saveData) {
+    return 'lite';
+  }
+
+  const net = typeof signals.effectiveType === 'string' ? signals.effectiveType.toLowerCase() : '';
+  if (net === 'slow-2g' || net === '2g') {
+    return 'lite';
+  }
+
+  const mem =
+    typeof signals.deviceMemory === 'number' && Number.isFinite(signals.deviceMemory) && signals.deviceMemory > 0
+      ? signals.deviceMemory
+      : null;
+  const cores =
+    typeof signals.hardwareConcurrency === 'number' &&
+    Number.isFinite(signals.hardwareConcurrency) &&
+    signals.hardwareConcurrency > 0
+      ? signals.hardwareConcurrency
+      : null;
+
+  // 1-3 GB RAM devices (classic entry-level smartphones)
+  if (mem !== null && mem <= 3) {
+    return 'lite';
+  }
+
+  // <= 4 CPU cores on mobile/touch phones
+  if (cores !== null && cores <= 4 && (signals.deviceType === 'mobile' || signals.isCoarsePointer)) {
+    return 'lite';
+  }
+
+  // Mid-range mobile/tablet/touch or 4 GB RAM or <= 4 cores desktop
+  if (
+    signals.deviceType === 'mobile' ||
+    signals.isCoarsePointer ||
+    (mem !== null && mem <= 4) ||
+    (cores !== null && cores <= 4)
+  ) {
+    return 'balanced';
+  }
+
+  return 'high';
+}
+
+/**
+ * Evaluates measured rolling FPS and steps performance tier down monotonically
+ * when sustained frame pacing drops below target so limited GPUs stay zero-lag.
+ */
+export function evaluateAdaptiveFpsStepDown(
+  currentTier: DevicePerfTier,
+  measuredFps: number,
+  lowWindowStreak: number
+): DevicePerfTier {
+  if (!Number.isFinite(measuredFps) || measuredFps <= 0 || lowWindowStreak < 2) {
+    return currentTier;
+  }
+  if (currentTier === 'high' && measuredFps < 44) {
+    return 'balanced';
+  }
+  if (currentTier === 'balanced' && measuredFps < 34) {
+    return 'lite';
+  }
+  return currentTier;
+}
 
 export const IDEAL_VIEWPORT_CONTENT =
   'width=device-width, initial-scale=1.0, viewport-fit=cover';
@@ -90,16 +171,17 @@ export function ensureResponsiveViewportMeta(): void {
 }
 
 /**
- * Synchronizes `data-device-type`, `data-display-mode`, and `--app-dvh` on `<html>`
- * whenever window dimensions, visualViewport, orientation, or standalone display-mode change.
+ * Synchronizes `data-device-type`, `data-display-mode`, `data-perf-tier`, and `--app-dvh` on `<html>`
+ * whenever window dimensions, visualViewport, orientation, hardware signals, or display-mode change.
  */
 export function syncDocumentDeviceAttributes(): {
   deviceType: DeviceViewportClass;
   displayMode: PwaDisplayMode;
+  perfTier: DevicePerfTier;
   width: number;
 } {
   if (typeof window === 'undefined' || typeof document === 'undefined') {
-    return { deviceType: 'desktop', displayMode: 'browser', width: 1280 };
+    return { deviceType: 'desktop', displayMode: 'browser', perfTier: 'high', width: 1280 };
   }
 
   ensureResponsiveViewportMeta();
@@ -119,13 +201,30 @@ export function syncDocumentDeviceAttributes(): {
   );
   const displayMode = detectInstalledDisplayMode(isStandaloneMatch, isNavStandalone);
 
+  const nav = window.navigator as Navigator & {
+    deviceMemory?: number;
+    connection?: { saveData?: boolean; effectiveType?: string };
+  };
+  const isCoarsePointer = Boolean(window.matchMedia?.('(pointer: coarse)').matches);
+  const prefersReducedMotion = Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
+  const perfTier = resolveDevicePerfTier({
+    deviceType,
+    hardwareConcurrency: typeof nav.hardwareConcurrency === 'number' ? nav.hardwareConcurrency : null,
+    deviceMemory: typeof nav.deviceMemory === 'number' ? nav.deviceMemory : null,
+    saveData: Boolean(nav.connection?.saveData),
+    effectiveType: typeof nav.connection?.effectiveType === 'string' ? nav.connection.effectiveType : null,
+    isCoarsePointer,
+    prefersReducedMotion,
+  });
+
   const root = document.documentElement;
   root.dataset.deviceType = deviceType;
   root.dataset.displayMode = displayMode;
+  root.dataset.perfTier = perfTier;
   const vh = window.visualViewport?.height || window.innerHeight || 0;
   if (vh > 0) {
     root.style.setProperty('--app-dvh', `${vh}px`);
   }
 
-  return { deviceType, displayMode, width: effectiveWidth };
+  return { deviceType, displayMode, perfTier, width: effectiveWidth };
 }

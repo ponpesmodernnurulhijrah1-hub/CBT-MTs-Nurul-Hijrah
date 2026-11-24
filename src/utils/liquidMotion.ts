@@ -198,3 +198,207 @@ export function computeRippleMetrics(
   };
 }
 
+export interface MotionTierProfile {
+  enableSpotlightMove: boolean;
+  enableMagneticPull: boolean;
+  enableLiquidRipple: boolean;
+  enableAuroraParallax: boolean;
+  enableMorphStretch: boolean;
+  enable3DTilt: boolean;
+  enableSharedMorph: boolean;
+  enableFluidSimulation: boolean;
+  maxTiltDeg: number;
+  fluidResolutionScale: number;
+  fluidTargetFps: number;
+  rippleLimit: number;
+  morphDurationMs: number;
+  sharedMorphDurationMs: number;
+  pillTransition: string;
+}
+
+/**
+ * Returns device-adaptive fluid transition parameters:
+ * ALL 3D, fluid, tilt, sheen, ripple, magnetic, and morph effects remain active
+ * across every tier — mobile tiers (`balanced`, `lite`) scale pixel fill-rate,
+ * frame pacing, and GPU-composited curve duration rather than dropping effects.
+ */
+export function resolveMotionProfileForTier(
+  tier: 'high' | 'balanced' | 'lite'
+): MotionTierProfile {
+  if (tier === 'lite') {
+    return {
+      enableSpotlightMove: true,
+      enableMagneticPull: true,
+      enableLiquidRipple: true,
+      enableAuroraParallax: true,
+      enableMorphStretch: true,
+      enable3DTilt: true,
+      enableSharedMorph: true,
+      enableFluidSimulation: true,
+      maxTiltDeg: 1.9,
+      fluidResolutionScale: 0.28,
+      fluidTargetFps: 30,
+      rippleLimit: 1,
+      morphDurationMs: 260,
+      sharedMorphDurationMs: 250,
+      pillTransition:
+        'transform 260ms cubic-bezier(0.22, 1, 0.36, 1), opacity 160ms cubic-bezier(0.22, 1, 0.36, 1)',
+    };
+  }
+  if (tier === 'balanced') {
+    return {
+      enableSpotlightMove: true,
+      enableMagneticPull: true,
+      enableLiquidRipple: true,
+      enableAuroraParallax: true,
+      enableMorphStretch: true,
+      enable3DTilt: true,
+      enableSharedMorph: true,
+      enableFluidSimulation: true,
+      maxTiltDeg: 2.4,
+      fluidResolutionScale: 0.45,
+      fluidTargetFps: 40,
+      rippleLimit: 2,
+      morphDurationMs: 330,
+      sharedMorphDurationMs: 310,
+      pillTransition:
+        'transform 330ms cubic-bezier(0.22, 1, 0.36, 1), width 300ms cubic-bezier(0.16, 1, 0.3, 1), height 300ms cubic-bezier(0.16, 1, 0.3, 1), opacity 180ms ease',
+    };
+  }
+  return {
+    enableSpotlightMove: true,
+    enableMagneticPull: true,
+    enableLiquidRipple: true,
+    enableAuroraParallax: true,
+    enableMorphStretch: true,
+    enable3DTilt: true,
+    enableSharedMorph: true,
+    enableFluidSimulation: true,
+    maxTiltDeg: 3.0,
+    fluidResolutionScale: 1.0,
+    fluidTargetFps: 60,
+    rippleLimit: 2,
+    morphDurationMs: 420,
+    sharedMorphDurationMs: 380,
+    pillTransition:
+      'transform 420ms cubic-bezier(0.22, 1, 0.36, 1), width 380ms cubic-bezier(0.16, 1, 0.3, 1), height 380ms cubic-bezier(0.16, 1, 0.3, 1), opacity 200ms ease',
+  };
+}
+
+export interface CardTiltAndSheen {
+  rotateXDeg: number;
+  rotateYDeg: number;
+  sheenXPercent: number;
+  sheenYPercent: number;
+  sheenAngleDeg: number;
+}
+
+/**
+ * Computes subtle 3D optical tilt (deg) and holographic prism sheen angle from pointer coordinates.
+ */
+export function computeCardTiltAndSheen(
+  clientX: number,
+  clientY: number,
+  rect: BoxRectLike,
+  maxTiltDeg = 3.2
+): CardTiltAndSheen {
+  if (
+    !Number.isFinite(rect.width) ||
+    rect.width <= 0 ||
+    !Number.isFinite(rect.height) ||
+    rect.height <= 0 ||
+    !Number.isFinite(maxTiltDeg) ||
+    maxTiltDeg <= 0
+  ) {
+    return {
+      rotateXDeg: 0,
+      rotateYDeg: 0,
+      sheenXPercent: 50,
+      sheenYPercent: 50,
+      sheenAngleDeg: 125,
+    };
+  }
+
+  const nx = Math.min(1, Math.max(-1, (clientX - (rect.left + rect.width / 2)) / (rect.width / 2)));
+  const ny = Math.min(1, Math.max(-1, (clientY - (rect.top + rect.height / 2)) / (rect.height / 2)));
+  const rotateXDeg = Math.round((-ny * maxTiltDeg) * 100) / 100 || 0;
+  const rotateYDeg = Math.round((nx * maxTiltDeg) * 100) / 100 || 0;
+  const sheenXPercent = Math.round(((nx + 1) * 50) * 10) / 10;
+  const sheenYPercent = Math.round(((ny + 1) * 50) * 10) / 10;
+  const sheenAngleDeg = Math.round((125 + nx * 28 - ny * 18) * 10) / 10;
+
+  return {
+    rotateXDeg,
+    rotateYDeg,
+    sheenXPercent,
+    sheenYPercent,
+    sheenAngleDeg,
+  };
+}
+
+export interface SharedElementFlipTransform {
+  dx: number;
+  dy: number;
+  scaleX: number;
+  scaleY: number;
+  valid: boolean;
+}
+
+/**
+ * Computes bounded FLIP (First-Last-Invert-Play) transform so modals and portal/exam views
+ * morph cleanly out of their triggering button or card without aspect distortion.
+ */
+export function computeSharedElementFlipTransform(
+  originRect: BoxRectLike | null | undefined,
+  targetRect: BoxRectLike | null | undefined
+): SharedElementFlipTransform {
+  if (
+    !originRect ||
+    !targetRect ||
+    !Number.isFinite(originRect.width) ||
+    !Number.isFinite(originRect.height) ||
+    !Number.isFinite(targetRect.width) ||
+    !Number.isFinite(targetRect.height) ||
+    originRect.width <= 4 ||
+    originRect.height <= 4 ||
+    targetRect.width <= 16 ||
+    targetRect.height <= 16
+  ) {
+    return { dx: 0, dy: 0, scaleX: 1, scaleY: 1, valid: false };
+  }
+
+  const originCx = originRect.left + originRect.width / 2;
+  const originCy = originRect.top + originRect.height / 2;
+  const targetCx = targetRect.left + targetRect.width / 2;
+  const targetCy = targetRect.top + targetRect.height / 2;
+
+  const dx = Math.round((originCx - targetCx) * 100) / 100;
+  const dy = Math.round((originCy - targetCy) * 100) / 100;
+  const rawScaleX = originRect.width / targetRect.width;
+  const rawScaleY = originRect.height / targetRect.height;
+
+  // Bound extreme ratios so narrow pill buttons expand gracefully into wide modals
+  const scaleX = Math.round(Math.min(1.25, Math.max(0.42, rawScaleX)) * 1000) / 1000;
+  const scaleY = Math.round(Math.min(1.25, Math.max(0.42, rawScaleY)) * 1000) / 1000;
+
+  return {
+    dx,
+    dy,
+    scaleX,
+    scaleY,
+    valid: Number.isFinite(dx) && Number.isFinite(dy),
+  };
+}
+
+/**
+ * Computes bounded 30ms stagger delay for exam answer options A..E during Liquid Card Flow.
+ */
+export function computeOptionStaggerDelayMs(
+  index: number,
+  stepMs = 30,
+  maxDelayMs = 150
+): number {
+  if (!Number.isFinite(index) || index < 0) return 0;
+  return Math.min(maxDelayMs, Math.round(index) * stepMs);
+}
+

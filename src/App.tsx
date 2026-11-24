@@ -21,6 +21,7 @@ import {
 } from './utils/updaterLogic';
 import { syncDocumentDeviceAttributes } from './utils/deviceViewport';
 import { useActiveMotionFlag, useLiquidSpecularGlobal } from './hooks/useLiquidMotion';
+import { LivingFluidCanvas } from './components/LivingFluidCanvas';
 import type { TeacherTab } from './components/TeacherTutorAssistant';
 import type { AdminTab } from './components/AdminPortal';
 import type { PetActivityEvent, PetAppContextSummary, PetClientAction } from './utils/virtualPetUtils';
@@ -321,8 +322,24 @@ export default function App() {
     window.visualViewport?.addEventListener('resize', handleViewportSync);
 
     const standaloneMq = window.matchMedia?.('(display-mode: standalone)');
+    const reducedMotionMq = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+    const netConn = (
+      navigator as Navigator & {
+        connection?: {
+          addEventListener?: (t: string, cb: () => void) => void;
+          removeEventListener?: (t: string, cb: () => void) => void;
+        };
+      }
+    ).connection;
+
     if (standaloneMq?.addEventListener) {
       standaloneMq.addEventListener('change', handleViewportSync);
+    }
+    if (reducedMotionMq?.addEventListener) {
+      reducedMotionMq.addEventListener('change', handleViewportSync);
+    }
+    if (netConn?.addEventListener) {
+      netConn.addEventListener('change', handleViewportSync);
     }
 
     return () => {
@@ -333,6 +350,12 @@ export default function App() {
       window.visualViewport?.removeEventListener('resize', handleViewportSync);
       if (standaloneMq?.removeEventListener) {
         standaloneMq.removeEventListener('change', handleViewportSync);
+      }
+      if (reducedMotionMq?.removeEventListener) {
+        reducedMotionMq.removeEventListener('change', handleViewportSync);
+      }
+      if (netConn?.removeEventListener) {
+        netConn.removeEventListener('change', handleViewportSync);
       }
     };
   }, []);
@@ -575,7 +598,10 @@ export default function App() {
   );
 
   return (
-    <div className="ios-mesh-bg min-h-[100dvh] w-full max-w-full text-slate-900 flex flex-col relative overflow-x-clip">
+    <div
+      data-zen-focus={isExamLocked ? 'true' : undefined}
+      className="ios-mesh-bg min-h-[100dvh] w-full max-w-full text-slate-900 flex flex-col relative overflow-x-clip"
+    >
       {/* Shared Hyper-Liquid SVG Optical Filters (#hyper-glass-refract & #liquid-gooey) */}
       <svg
         aria-hidden="true"
@@ -613,11 +639,12 @@ export default function App() {
         </defs>
       </svg>
 
-      {/* Interactive Fluid Aurora Lava-Lamp Backdrop (Sapphire, Cyan, Aurora Purple, Pearl Silver) */}
+      {/* Interactive Living Fluid WebGL/2D Simulation & Aurora Mist Backdrop */}
       <div
         aria-hidden="true"
         className="ios-mesh-backdrop pointer-events-none fixed inset-0 z-0 no-print"
       >
+        <LivingFluidCanvas zenFocus={isExamLocked} />
         <span className="aurora-blob aurora-blob-sapphire" />
         <span className="aurora-blob aurora-blob-cyan" />
         <span className="aurora-blob aurora-blob-purple" />
@@ -732,6 +759,7 @@ export default function App() {
             key="siswa"
             className="portal-transition-enter"
             data-portal-view="siswa"
+            data-shared-morph="true"
             data-motion-active={portalMotion.motionActive ? 'true' : undefined}
             onAnimationEnd={portalMotion.onAnimationEnd}
           >
@@ -772,6 +800,7 @@ export default function App() {
                 key="guru"
                 className="portal-transition-enter"
                 data-portal-view="guru"
+                data-shared-morph="true"
                 data-motion-active={portalMotion.motionActive ? 'true' : undefined}
                 onAnimationEnd={portalMotion.onAnimationEnd}
               >
@@ -815,6 +844,7 @@ export default function App() {
                 key="admin"
                 className="portal-transition-enter"
                 data-portal-view="admin"
+                data-shared-morph="true"
                 data-motion-active={portalMotion.motionActive ? 'true' : undefined}
                 onAnimationEnd={portalMotion.onAnimationEnd}
               >

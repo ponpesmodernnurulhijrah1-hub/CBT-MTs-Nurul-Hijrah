@@ -2,12 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   clampRelativeSpecularCoords,
+  computeCardTiltAndSheen,
   computeMagneticPull,
   computeMorphIndicatorRect,
   computeMorphStretchMetrics,
+  computeOptionStaggerDelayMs,
   computeRippleMetrics,
+  computeSharedElementFlipTransform,
   resolveActiveMotionLayerState,
   resolveMorphActiveDurationMs,
+  resolveMotionProfileForTier,
   resolveQuestionSlideDirection,
   resolveTabSlideDirection,
 } from './liquidMotion';
@@ -127,4 +131,67 @@ test('computeRippleMetrics sizes expanding ripple to reach farthest corner of ta
   assert.equal(edgeRipple.localX, 0);
   assert.equal(edgeRipple.localY, 0);
   assert.ok(edgeRipple.diameter >= Math.ceil(Math.hypot(100, 40) * 2));
+});
+
+test('resolveMotionProfileForTier preserves all 3D & fluid effects across mobile tiers while scaling GPU budgets', () => {
+  const lite = resolveMotionProfileForTier('lite');
+  assert.equal(lite.enableLiquidRipple, true);
+  assert.equal(lite.enableMagneticPull, true);
+  assert.equal(lite.enableSpotlightMove, true);
+  assert.equal(lite.enableMorphStretch, true);
+  assert.equal(lite.enable3DTilt, true);
+  assert.equal(lite.enableSharedMorph, true);
+  assert.equal(lite.enableFluidSimulation, true);
+  assert.ok(lite.fluidResolutionScale < 0.4);
+  assert.ok(lite.fluidTargetFps <= 30);
+  assert.equal(lite.rippleLimit, 1);
+  assert.ok(!lite.pillTransition.includes('width'));
+
+  const balanced = resolveMotionProfileForTier('balanced');
+  assert.equal(balanced.enableLiquidRipple, true);
+  assert.equal(balanced.enableMagneticPull, true);
+  assert.equal(balanced.enableAuroraParallax, true);
+  assert.equal(balanced.enable3DTilt, true);
+  assert.ok(balanced.fluidResolutionScale < 0.6);
+
+  const high = resolveMotionProfileForTier('high');
+  assert.equal(high.enableLiquidRipple, true);
+  assert.equal(high.enableMagneticPull, true);
+  assert.equal(high.enableAuroraParallax, true);
+  assert.equal(high.fluidResolutionScale, 1.0);
+  assert.equal(high.fluidTargetFps, 60);
+});
+
+test('computeCardTiltAndSheen produces symmetric bounded 3D tilt angles and prism sheen coordinates', () => {
+  const rect = { left: 100, top: 100, width: 400, height: 200 };
+  const center = computeCardTiltAndSheen(300, 200, rect, 3.2);
+  assert.equal(center.rotateXDeg, 0);
+  assert.equal(center.rotateYDeg, 0);
+  assert.equal(center.sheenXPercent, 50);
+
+  const topRight = computeCardTiltAndSheen(500, 100, rect, 3.2);
+  assert.equal(topRight.rotateXDeg, 3.2);
+  assert.equal(topRight.rotateYDeg, 3.2);
+  assert.equal(topRight.sheenXPercent, 100);
+  assert.equal(topRight.sheenYPercent, 0);
+});
+
+test('computeSharedElementFlipTransform calculates clamped FLIP offset & scale ratios safely', () => {
+  const origin = { left: 80, top: 40, width: 100, height: 40 };
+  const target = { left: 320, top: 180, width: 500, height: 400 };
+  const flip = computeSharedElementFlipTransform(origin, target);
+  assert.equal(flip.valid, true);
+  assert.equal(flip.dx, -440);
+  assert.equal(flip.dy, -320);
+  assert.ok(flip.scaleX >= 0.42 && flip.scaleX <= 1.25);
+  assert.ok(flip.scaleY >= 0.42 && flip.scaleY <= 1.25);
+
+  assert.equal(computeSharedElementFlipTransform(null, target).valid, false);
+});
+
+test('computeOptionStaggerDelayMs applies 30ms step with upper cap', () => {
+  assert.equal(computeOptionStaggerDelayMs(0), 0);
+  assert.equal(computeOptionStaggerDelayMs(1), 30);
+  assert.equal(computeOptionStaggerDelayMs(4), 120);
+  assert.equal(computeOptionStaggerDelayMs(8), 150);
 });

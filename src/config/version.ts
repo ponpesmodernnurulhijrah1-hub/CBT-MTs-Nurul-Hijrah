@@ -11,7 +11,7 @@ const viteMetaEnv =
  * Comparing `APP_BUILD_HASH` against `/api/version` & `/version.json` lets installed PWAs
  * detect stale cached bundles even when a version string did not change.
  */
-export const APP_VERSION = '2026.11.24-v14';
+export const APP_VERSION = '2026.11.24-v17';
 export const APP_SCHEMA_VERSION = 8;
 export const APP_BUILD_HASH: string =
   viteMetaEnv?.VITE_APP_BUILD_HASH ||

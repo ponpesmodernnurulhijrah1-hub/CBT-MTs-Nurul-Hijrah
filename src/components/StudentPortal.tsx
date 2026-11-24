@@ -1580,7 +1580,10 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
   return (
     <>
       {persistentAudioElement}
-      <main className="mx-auto max-w-7xl px-4 sm:px-6 py-5 select-none panel-enter">
+      <main
+        data-shared-morph="true"
+        className="mx-auto max-w-7xl px-4 sm:px-6 py-5 select-none panel-enter"
+      >
         {/* Hidden canvas for lightweight proctor preview snapshot */}
         <canvas ref={snapshotCanvasRef} className="hidden" />
 
@@ -1866,7 +1869,8 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                       return (
                         <label
                           key={oIdx}
-                          className={`liquid-option-card group flex cursor-pointer items-start gap-3 rounded-2xl border p-3.5 text-sm ${
+                          style={{ '--option-index': oIdx } as React.CSSProperties}
+                          className={`liquid-option-card liquid-option-stagger group flex cursor-pointer items-start gap-3 rounded-2xl border p-3.5 text-sm ${
                             selected
                               ? 'border-emerald-600/75 bg-emerald-50/90 font-semibold text-slate-950 shadow-[0_12px_26px_-12px_rgba(4,120,87,0.35)]'
                               : 'border-white/85 bg-white/80 text-slate-950 hover:-translate-y-0.5 hover:border-sky-300/90 hover:bg-white/95 hover:shadow-sm'
@@ -2129,7 +2133,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                         type="button"
                         data-morph-active={isCurrent ? 'true' : undefined}
                         onClick={() => setCurrentIdx(idx)}
-                        className={`btn-press relative z-10 h-9 rounded-xl border font-mono-tabular text-xs transition-colors ${cls} ${
+                        className={`btn-press liquid-question-btn relative z-10 h-9 rounded-xl border font-mono-tabular text-xs transition-colors ${cls} ${
                           isCurrent && !questionGridMorph.visible ? 'ring-2 ring-slate-900 ring-offset-1' : ''
                         }`}
                       >
