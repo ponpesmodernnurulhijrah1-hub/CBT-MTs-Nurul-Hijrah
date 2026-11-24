@@ -551,7 +551,7 @@ export function useAppUpdater(
         } catch {
           // Fallback polling continues seamlessly if EventSource fails
         }
-      }, 1200);
+      }, 250);
     }
 
     // Cross-tab instant synchronization

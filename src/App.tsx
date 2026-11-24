@@ -20,7 +20,7 @@ import {
   shouldSoftReloadFromSwHeartbeat,
 } from './utils/updaterLogic';
 import { syncDocumentDeviceAttributes } from './utils/deviceViewport';
-import { useLiquidSpecularGlobal } from './hooks/useLiquidMotion';
+import { useActiveMotionFlag, useLiquidSpecularGlobal } from './hooks/useLiquidMotion';
 import type { TeacherTab } from './components/TeacherTutorAssistant';
 import type { AdminTab } from './components/AdminPortal';
 import type { PetActivityEvent, PetAppContextSummary, PetClientAction } from './utils/virtualPetUtils';
@@ -75,6 +75,7 @@ const ADMIN_TABS: AdminTab[] = [
 export default function App() {
   useLiquidSpecularGlobal();
   const [activeRole, setActiveRole] = useState<UserRole>('siswa');
+  const portalMotion = useActiveMotionFlag(activeRole, 420);
   const [isExamLocked, setIsExamLocked] = useState(false);
   const [qrModalOpen, setQrModalOpen] = useState(false);
   const [diagModalOpen, setDiagModalOpen] = useState(false);
@@ -575,11 +576,54 @@ export default function App() {
 
   return (
     <div className="ios-mesh-bg min-h-[100dvh] w-full max-w-full text-slate-900 flex flex-col relative overflow-x-clip">
-      {/* Compositor-only fixed pastel mesh backdrop (zero blur-3xl GPU passes & zero scroll repaint) */}
+      {/* Shared Hyper-Liquid SVG Optical Filters (#hyper-glass-refract & #liquid-gooey) */}
+      <svg
+        aria-hidden="true"
+        width="0"
+        height="0"
+        className="pointer-events-none fixed h-0 w-0 overflow-hidden opacity-0 no-print"
+      >
+        <defs>
+          <filter id="hyper-glass-refract" x="-3%" y="-3%" width="106%" height="106%">
+            <feTurbulence
+              type="fractalNoise"
+              baseFrequency="0.008 0.012"
+              numOctaves="1"
+              seed="7"
+              result="noise"
+            />
+            <feDisplacementMap
+              in="SourceGraphic"
+              in2="noise"
+              scale="1.6"
+              xChannelSelector="R"
+              yChannelSelector="G"
+            />
+          </filter>
+          <filter id="liquid-gooey">
+            <feGaussianBlur in="SourceGraphic" stdDeviation="5" result="blur" />
+            <feColorMatrix
+              in="blur"
+              mode="matrix"
+              values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 21 -8"
+              result="goo"
+            />
+            <feComposite in="SourceGraphic" in2="goo" operator="atop" />
+          </filter>
+        </defs>
+      </svg>
+
+      {/* Interactive Fluid Aurora Lava-Lamp Backdrop (Sapphire, Cyan, Aurora Purple, Pearl Silver) */}
       <div
         aria-hidden="true"
         className="ios-mesh-backdrop pointer-events-none fixed inset-0 z-0 no-print"
-      />
+      >
+        <span className="aurora-blob aurora-blob-sapphire" />
+        <span className="aurora-blob aurora-blob-cyan" />
+        <span className="aurora-blob aurora-blob-purple" />
+        <span className="aurora-blob aurora-blob-pearl" />
+        <span className="aurora-cursor-orb" />
+      </div>
 
       {/* Auto-update notification banner (defers reload while student is actively taking exam) */}
       {updateAvailable && (
@@ -684,7 +728,13 @@ export default function App() {
 
       <div className="relative z-10 flex-1">
         {activeRole === 'siswa' && (
-          <div key="siswa" className="portal-transition-enter" data-portal-view="siswa">
+          <div
+            key="siswa"
+            className="portal-transition-enter"
+            data-portal-view="siswa"
+            data-motion-active={portalMotion.motionActive ? 'true' : undefined}
+            onAnimationEnd={portalMotion.onAnimationEnd}
+          >
             <StudentPortal
               classes={store.classes}
               exams={store.exams}
@@ -718,7 +768,13 @@ export default function App() {
         {activeRole === 'guru' && (
           <PortalErrorBoundary portalLabel="Portal Guru" onRetry={() => void handleReconnectBackend()}>
             <Suspense fallback={<PortalLoader />}>
-              <div key="guru" className="portal-transition-enter" data-portal-view="guru">
+              <div
+                key="guru"
+                className="portal-transition-enter"
+                data-portal-view="guru"
+                data-motion-active={portalMotion.motionActive ? 'true' : undefined}
+                onAnimationEnd={portalMotion.onAnimationEnd}
+              >
                 <TeacherPortal
                   loggedTeacher={loggedTeacher}
                   onSetLoggedTeacher={setLoggedTeacher}
@@ -755,7 +811,13 @@ export default function App() {
         {activeRole === 'admin' && (
           <PortalErrorBoundary portalLabel="Portal Super Admin" onRetry={() => void handleReconnectBackend()}>
             <Suspense fallback={<PortalLoader />}>
-              <div key="admin" className="portal-transition-enter" data-portal-view="admin">
+              <div
+                key="admin"
+                className="portal-transition-enter"
+                data-portal-view="admin"
+                data-motion-active={portalMotion.motionActive ? 'true' : undefined}
+                onAnimationEnd={portalMotion.onAnimationEnd}
+              >
                 <AdminPortal
                   loggedAdmin={loggedAdmin}
                   onSetLoggedAdmin={setLoggedAdmin}

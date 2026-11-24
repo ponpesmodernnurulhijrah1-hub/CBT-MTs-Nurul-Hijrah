@@ -58,7 +58,7 @@ import {
   recordStudentViolation,
 } from '../utils/violationTracker';
 import { useStudentWebRTCPublisher } from '../hooks/useWebRTCProctor';
-import { useLiquidMorphPill, useQuestionSlideDirection } from '../hooks/useLiquidMotion';
+import { useActiveMotionFlag, useLiquidMorphPill, useQuestionSlideDirection } from '../hooks/useLiquidMotion';
 
 interface StudentPortalProps {
   classes: ClassItem[];
@@ -159,6 +159,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
   const filterNavRef = useRef<HTMLDivElement | null>(null);
   const questionGridRef = useRef<HTMLDivElement | null>(null);
   const questionSlideDirection = useQuestionSlideDirection(currentIdx);
+  const questionMotion = useActiveMotionFlag(currentIdx, 360);
   const questionSlideClass =
     questionSlideDirection === 'forward'
       ? 'question-slide-next'
@@ -1779,7 +1780,12 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
           {/* Question Card (Denser Frosted Reading Layer for Razor-Sharp Legibility) */}
           <div className="lg:col-span-8 exam-reading-surface rounded-3xl p-5 sm:p-7 flex flex-col justify-between">
             {currentQ && (
-              <div key={currentQ.id} className={questionSlideClass}>
+              <div
+                key={currentQ.id}
+                className={questionSlideClass}
+                data-motion-active={questionMotion.motionActive ? 'true' : undefined}
+                onAnimationEnd={questionMotion.onAnimationEnd}
+              >
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/75 pb-3.5">
                   <div className="flex items-center gap-2.5 text-xs">
                     <span className="rounded-xl bg-slate-950/90 border border-white/30 px-3 py-1 font-mono-tabular font-bold text-white shadow-xs">
@@ -2039,11 +2045,15 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
 
               {/* Filter Tabs for Fast Jump with Liquid Morphing Pill */}
               <div ref={filterNavRef} className="relative glass-subtle grid grid-cols-3 gap-1 rounded-xl p-1">
-                <span
-                  aria-hidden="true"
-                  style={filterMorph.pillStyle}
-                  className="liquid-morph-pill rounded-lg z-0"
-                />
+                <div aria-hidden="true" className="liquid-gooey-stage pointer-events-none absolute inset-0 z-0">
+                  <span
+                    style={filterMorph.pillStyle}
+                    data-morphing={filterMorph.isMorphing ? 'true' : undefined}
+                    data-morph-animating={filterMorph.isMoving ? 'true' : undefined}
+                    data-morph-axis={filterMorph.morphAxis}
+                    className="liquid-morph-pill rounded-lg"
+                  />
+                </div>
                 <button
                   type="button"
                   data-morph-active={navFilter === 'ALL' ? 'true' : undefined}
@@ -2094,11 +2104,15 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                 </p>
               ) : (
                 <div ref={questionGridRef} className="relative grid grid-cols-5 gap-2">
-                  <span
-                    aria-hidden="true"
-                    style={questionGridMorph.pillStyle}
-                    className="liquid-morph-ring z-20"
-                  />
+                  <div aria-hidden="true" className="liquid-gooey-stage pointer-events-none absolute inset-0 z-20">
+                    <span
+                      style={questionGridMorph.pillStyle}
+                      data-morphing={questionGridMorph.isMorphing ? 'true' : undefined}
+                      data-morph-animating={questionGridMorph.isMoving ? 'true' : undefined}
+                      data-morph-axis={questionGridMorph.morphAxis}
+                      className="liquid-morph-ring"
+                    />
+                  </div>
                   {filteredNavItems.map(({ q, idx }) => {
                     const isAnswered = (answersMap[q.id]?.length || 0) > 0;
                     const isDoubtful = Boolean(doubtfulMap[q.id]);

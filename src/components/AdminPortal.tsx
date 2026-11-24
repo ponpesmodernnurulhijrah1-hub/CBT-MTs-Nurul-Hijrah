@@ -41,7 +41,7 @@ import type {
 import { SyncStatusIndicator } from './SyncStatusIndicator';
 import { printPrivacySafeTeacherDirectory } from '../utils/exportHelpers';
 import { getTeacherSubjects } from '../utils/storeSyncUtils';
-import { useLiquidMorphPill, useTabSlideDirection } from '../hooks/useLiquidMotion';
+import { useActiveMotionFlag, useLiquidMorphPill, useTabSlideDirection } from '../hooks/useLiquidMotion';
 
 const BankSoalPanel = lazy(() =>
   import('./BankSoalPanel').then((m) => ({ default: m.BankSoalPanel }))
@@ -206,6 +206,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const mobNavRef = useRef<HTMLElement | null>(null);
   const deskNavRef = useRef<HTMLElement | null>(null);
   const tabSlideDirection = useTabSlideDirection(ADMIN_TAB_ORDER, activeTab);
+  const tabMotion = useActiveMotionFlag(activeTab, 400);
   const tabSlideClass =
     tabSlideDirection === 'forward'
       ? 'tab-slide-forward'
@@ -601,13 +602,17 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         <nav
           ref={mobNavRef}
           aria-label="Menu Super Admin Mobile"
-          className="relative lg:hidden flex items-center gap-1.5 overflow-x-auto no-scrollbar rounded-2xl border border-white/55 border-t-white/85 border-l-white/75 bg-white/35 backdrop-blur-2xl backdrop-saturate-[180%] p-1.5 shadow-[inset_0_1px_1px_rgba(255,255,255,0.82),0_10px_24px_-14px_rgba(30,58,138,0.16)]"
+          className="relative lg:hidden flex items-center gap-1.5 overflow-x-auto no-scrollbar rounded-2xl border border-white/60 border-t-white/85 border-l-white/75 bg-white/45 backdrop-blur-md p-1.5 shadow-[inset_0_1px_1px_rgba(255,255,255,0.82),0_10px_24px_-14px_rgba(30,58,138,0.16)]"
         >
-          <span
-            aria-hidden="true"
-            style={mobMorph.pillStyle}
-            className="liquid-morph-pill-accent rounded-xl z-0"
-          />
+          <div aria-hidden="true" className="liquid-gooey-stage pointer-events-none absolute inset-0 z-0">
+            <span
+              style={mobMorph.pillStyle}
+              data-morphing={mobMorph.isMorphing ? 'true' : undefined}
+              data-morph-animating={mobMorph.isMoving ? 'true' : undefined}
+              data-morph-axis={mobMorph.morphAxis}
+              className="liquid-morph-pill-accent rounded-xl"
+            />
+          </div>
           {navItems.map((item) => {
             const isActive = activeTab === item.id;
             return (
@@ -649,11 +654,15 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
           aria-label="Menu Super Admin Desktop"
           className="relative hidden lg:block surface-card rounded-3xl p-2 space-y-1"
         >
-          <span
-            aria-hidden="true"
-            style={deskMorph.pillStyle}
-            className="liquid-morph-pill-accent rounded-xl z-0"
-          />
+          <div aria-hidden="true" className="liquid-gooey-stage pointer-events-none absolute inset-0 z-0">
+            <span
+              style={deskMorph.pillStyle}
+              data-morphing={deskMorph.isMorphing ? 'true' : undefined}
+              data-morph-animating={deskMorph.isMoving ? 'true' : undefined}
+              data-morph-axis={deskMorph.morphAxis}
+              className="liquid-morph-pill-accent rounded-xl"
+            />
+          </div>
           {navItems.map((item) => {
             const isActive = activeTab === item.id;
             return (
@@ -734,7 +743,13 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         </div>
 
         {activeTab === 'ringkasan' && (
-          <div key="ringkasan" className={`space-y-6 ${tabSlideClass}`} data-admin-tab-panel="ringkasan">
+          <div
+            key="ringkasan"
+            className={`space-y-6 ${tabSlideClass}`}
+            data-admin-tab-panel="ringkasan"
+            data-motion-active={tabMotion.motionActive ? 'true' : undefined}
+            onAnimationEnd={tabMotion.onAnimationEnd}
+          >
             {/* Global Quick Jump / Search Bar */}
             <div className="surface-card p-4 space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1038,7 +1053,13 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
         {/* TAB: DYNAMIC SUBJECTS */}
         {activeTab === 'mapel' && (
-          <div key="mapel" className={`space-y-5 ${tabSlideClass}`} data-admin-tab-panel="mapel">
+          <div
+            key="mapel"
+            className={`space-y-5 ${tabSlideClass}`}
+            data-admin-tab-panel="mapel"
+            data-motion-active={tabMotion.motionActive ? 'true' : undefined}
+            onAnimationEnd={tabMotion.onAnimationEnd}
+          >
             <form
               onSubmit={async (e) => {
                 e.preventDefault();
@@ -1232,7 +1253,13 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
         {/* TAB: DYNAMIC CLASSES */}
         {activeTab === 'kelas' && (
-          <div key="kelas" className={`space-y-5 ${tabSlideClass}`} data-admin-tab-panel="kelas">
+          <div
+            key="kelas"
+            className={`space-y-5 ${tabSlideClass}`}
+            data-admin-tab-panel="kelas"
+            data-motion-active={tabMotion.motionActive ? 'true' : undefined}
+            onAnimationEnd={tabMotion.onAnimationEnd}
+          >
             <form
               onSubmit={async (e) => {
                 e.preventDefault();
@@ -1368,7 +1395,13 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
         {/* TAB: PRIVACY-HARDENED TEACHER MANAGEMENT */}
         {activeTab === 'guru' && (
-          <div key="guru" className={`space-y-5 ${tabSlideClass}`} data-admin-tab-panel="guru">
+          <div
+            key="guru"
+            className={`space-y-5 ${tabSlideClass}`}
+            data-admin-tab-panel="guru"
+            data-motion-active={tabMotion.motionActive ? 'true' : undefined}
+            onAnimationEnd={tabMotion.onAnimationEnd}
+          >
             <form
               onSubmit={async (e) => {
                 e.preventDefault();
@@ -1780,7 +1813,13 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
         {/* TAB: BANK SOAL & JADWAL PUSAT */}
         {activeTab === 'bank-jadwal' && (
-          <div key="bank-jadwal" className={tabSlideClass} data-admin-tab-panel="bank-jadwal">
+          <div
+            key="bank-jadwal"
+            className={tabSlideClass}
+            data-admin-tab-panel="bank-jadwal"
+            data-motion-active={tabMotion.motionActive ? 'true' : undefined}
+            onAnimationEnd={tabMotion.onAnimationEnd}
+          >
             <Suspense fallback={<PanelFallback />}>
               <div className="space-y-8">
                 <BankSoalPanel
@@ -1813,7 +1852,13 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
         {/* TAB: INTEGRATED AI QUESTION STUDIO */}
         {activeTab === 'ai-import' && (
-          <div key="ai-import" className={tabSlideClass} data-admin-tab-panel="ai-import">
+          <div
+            key="ai-import"
+            className={tabSlideClass}
+            data-admin-tab-panel="ai-import"
+            data-motion-active={tabMotion.motionActive ? 'true' : undefined}
+            onAnimationEnd={tabMotion.onAnimationEnd}
+          >
             <Suspense fallback={<PanelFallback />}>
               <SmartImportPanel
                 subjects={subjectNames}
@@ -1829,7 +1874,13 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
         {/* TAB: LIVE MONITORING ALL PARTICIPANTS */}
         {activeTab === 'monitoring' && (
-          <div key="monitoring" className={tabSlideClass} data-admin-tab-panel="monitoring">
+          <div
+            key="monitoring"
+            className={tabSlideClass}
+            data-admin-tab-panel="monitoring"
+            data-motion-active={tabMotion.motionActive ? 'true' : undefined}
+            onAnimationEnd={tabMotion.onAnimationEnd}
+          >
             <Suspense fallback={<PanelFallback />}>
               <LiveMonitoringGrid
                 sessions={liveStreams}
@@ -1842,7 +1893,13 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
         {/* TAB: REKAP NILAI SEMUA MAPEL */}
         {activeTab === 'rekap' && (
-          <div key="rekap" className={tabSlideClass} data-admin-tab-panel="rekap">
+          <div
+            key="rekap"
+            className={tabSlideClass}
+            data-admin-tab-panel="rekap"
+            data-motion-active={tabMotion.motionActive ? 'true' : undefined}
+            onAnimationEnd={tabMotion.onAnimationEnd}
+          >
             <Suspense fallback={<PanelFallback />}>
               <ResultsPanel
                 key={rekapPresetStatus}
@@ -1861,7 +1918,13 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
         {/* TAB: LOG SINKRONISASI REAL-TIME */}
         {activeTab === 'log-sinkron' && (
-          <div key="log-sinkron" className={tabSlideClass} data-admin-tab-panel="log-sinkron">
+          <div
+            key="log-sinkron"
+            className={tabSlideClass}
+            data-admin-tab-panel="log-sinkron"
+            data-motion-active={tabMotion.motionActive ? 'true' : undefined}
+            onAnimationEnd={tabMotion.onAnimationEnd}
+          >
             <Suspense fallback={<PanelFallback />}>
               <SyncLogsPanel
                 logs={syncLogs}

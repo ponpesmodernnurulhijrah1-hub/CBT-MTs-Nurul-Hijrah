@@ -418,6 +418,10 @@ export const VirtualPetAssistant: React.FC<VirtualPetAssistantProps> = ({
         rafDragRef.current = null;
       }
 
+      if (petWidgetRef.current) {
+        petWidgetRef.current.style.willChange = 'auto';
+      }
+
       if (wasDragged) {
         const latest = pendingDragPosRef.current;
         setPosition(latest);
@@ -442,6 +446,9 @@ export const VirtualPetAssistant: React.FC<VirtualPetAssistantProps> = ({
         window.cancelAnimationFrame(rafDragRef.current);
         rafDragRef.current = null;
       }
+      if (petWidgetRef.current) {
+        petWidgetRef.current.style.willChange = 'auto';
+      }
     };
   }, []);
 
@@ -449,6 +456,9 @@ export const VirtualPetAssistant: React.FC<VirtualPetAssistantProps> = ({
     if (e.button !== 0 && e.pointerType === 'mouse') return;
     lastActivityRef.current = Date.now();
     pendingDragPosRef.current = position;
+    if (petWidgetRef.current) {
+      petWidgetRef.current.style.willChange = 'transform';
+    }
     dragStateRef.current = {
       active: true,
       pointerId: e.pointerId,
@@ -635,7 +645,7 @@ export const VirtualPetAssistant: React.FC<VirtualPetAssistantProps> = ({
         <div
           ref={petWidgetRef}
           style={{ transform: `translate3d(${position.x}px, ${position.y}px, 0)` }}
-          className="fixed left-0 top-0 z-40 w-[92px] h-[92px] select-none will-change-transform"
+          className="fixed left-0 top-0 z-40 w-[92px] h-[92px] select-none"
         >
           {/* Animated Floating Hearts & Stars */}
           <div

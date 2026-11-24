@@ -35,7 +35,7 @@ import type {
 import { SyncStatusIndicator } from './SyncStatusIndicator';
 import { exportExamResultsToExcel } from '../utils/exportHelpers';
 import { getTeacherSubjects } from '../utils/storeSyncUtils';
-import { useLiquidMorphPill, useTabSlideDirection } from '../hooks/useLiquidMotion';
+import { useActiveMotionFlag, useLiquidMorphPill, useTabSlideDirection } from '../hooks/useLiquidMotion';
 import type { TeacherTab } from './TeacherTutorAssistant';
 
 const TEACHER_TAB_ORDER: readonly TeacherTab[] = [
@@ -156,6 +156,7 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
   const mobNavRef = useRef<HTMLElement | null>(null);
   const deskNavRef = useRef<HTMLElement | null>(null);
   const tabSlideDirection = useTabSlideDirection(TEACHER_TAB_ORDER, activeTab);
+  const tabMotion = useActiveMotionFlag(activeTab, 400);
   const tabSlideClass =
     tabSlideDirection === 'forward'
       ? 'tab-slide-forward'
@@ -451,13 +452,17 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
         <nav
           ref={mobNavRef}
           aria-label="Menu Portal Guru Mobile"
-          className="relative lg:hidden flex items-center gap-1.5 overflow-x-auto no-scrollbar rounded-2xl border border-white/55 border-t-white/85 border-l-white/75 bg-white/35 backdrop-blur-2xl backdrop-saturate-[180%] p-1.5 shadow-[inset_0_1px_1px_rgba(255,255,255,0.82),0_10px_24px_-14px_rgba(30,58,138,0.16)]"
+          className="relative lg:hidden flex items-center gap-1.5 overflow-x-auto no-scrollbar rounded-2xl border border-white/60 border-t-white/85 border-l-white/75 bg-white/45 backdrop-blur-md p-1.5 shadow-[inset_0_1px_1px_rgba(255,255,255,0.82),0_10px_24px_-14px_rgba(30,58,138,0.16)]"
         >
-          <span
-            aria-hidden="true"
-            style={mobMorph.pillStyle}
-            className="liquid-morph-pill-accent rounded-xl z-0"
-          />
+          <div aria-hidden="true" className="liquid-gooey-stage pointer-events-none absolute inset-0 z-0">
+            <span
+              style={mobMorph.pillStyle}
+              data-morphing={mobMorph.isMorphing ? 'true' : undefined}
+              data-morph-animating={mobMorph.isMoving ? 'true' : undefined}
+              data-morph-axis={mobMorph.morphAxis}
+              className="liquid-morph-pill-accent rounded-xl"
+            />
+          </div>
           {navItems.map((item) => {
             const isActive = activeTab === item.id;
             return (
@@ -499,11 +504,15 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
           aria-label="Menu Portal Guru Desktop"
           className="relative hidden lg:block surface-card rounded-3xl p-2 space-y-1"
         >
-          <span
-            aria-hidden="true"
-            style={deskMorph.pillStyle}
-            className="liquid-morph-pill-accent rounded-xl z-0"
-          />
+          <div aria-hidden="true" className="liquid-gooey-stage pointer-events-none absolute inset-0 z-0">
+            <span
+              style={deskMorph.pillStyle}
+              data-morphing={deskMorph.isMorphing ? 'true' : undefined}
+              data-morph-animating={deskMorph.isMoving ? 'true' : undefined}
+              data-morph-axis={deskMorph.morphAxis}
+              className="liquid-morph-pill-accent rounded-xl"
+            />
+          </div>
           {navItems.map((item) => {
             const isWalkHighlight =
               (walkthroughStep === 0 && item.id === 'bank-soal') ||
@@ -646,7 +655,13 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
         )}
 
         {activeTab === 'analitik' && (
-          <div key="analitik" className={`space-y-6 ${tabSlideClass}`} data-teacher-tab-panel="analitik">
+          <div
+            key="analitik"
+            className={`space-y-6 ${tabSlideClass}`}
+            data-teacher-tab-panel="analitik"
+            data-motion-active={tabMotion.motionActive ? 'true' : undefined}
+            onAnimationEnd={tabMotion.onAnimationEnd}
+          >
             {/* Indikator Status Ujian Frosted Glass Strip */}
             <div className="surface-card rounded-3xl p-4 sm:p-5 flex flex-wrap items-center justify-between gap-4">
               <div className="flex items-start sm:items-center gap-3.5 min-w-0">
@@ -908,7 +923,13 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
         )}
 
         {activeTab === 'bank-soal' && (
-          <div key="bank-soal" className={tabSlideClass} data-teacher-tab-panel="bank-soal">
+          <div
+            key="bank-soal"
+            className={tabSlideClass}
+            data-teacher-tab-panel="bank-soal"
+            data-motion-active={tabMotion.motionActive ? 'true' : undefined}
+            onAnimationEnd={tabMotion.onAnimationEnd}
+          >
             <Suspense fallback={<TabLoading />}>
               <BankSoalPanel
                 questions={questions}
@@ -930,7 +951,13 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
         )}
 
         {activeTab === 'import' && (
-          <div key="import" className={tabSlideClass} data-teacher-tab-panel="import">
+          <div
+            key="import"
+            className={tabSlideClass}
+            data-teacher-tab-panel="import"
+            data-motion-active={tabMotion.motionActive ? 'true' : undefined}
+            onAnimationEnd={tabMotion.onAnimationEnd}
+          >
             <Suspense fallback={<TabLoading />}>
               <SmartImportPanel
                 subjects={subjectNames}
@@ -946,7 +973,13 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
         )}
 
         {activeTab === 'jadwal' && (
-          <div key="jadwal" className={tabSlideClass} data-teacher-tab-panel="jadwal">
+          <div
+            key="jadwal"
+            className={tabSlideClass}
+            data-teacher-tab-panel="jadwal"
+            data-motion-active={tabMotion.motionActive ? 'true' : undefined}
+            onAnimationEnd={tabMotion.onAnimationEnd}
+          >
             <Suspense fallback={<TabLoading />}>
               <JadwalTesPanel
                 exams={exams}
@@ -964,7 +997,13 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
         )}
 
         {activeTab === 'monitoring' && (
-          <div key="monitoring" className={tabSlideClass} data-teacher-tab-panel="monitoring">
+          <div
+            key="monitoring"
+            className={tabSlideClass}
+            data-teacher-tab-panel="monitoring"
+            data-motion-active={tabMotion.motionActive ? 'true' : undefined}
+            onAnimationEnd={tabMotion.onAnimationEnd}
+          >
             <Suspense fallback={<TabLoading />}>
               <LiveMonitoringGrid
                 sessions={subjectLiveStreams}
@@ -976,7 +1015,13 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
         )}
 
         {activeTab === 'hasil' && (
-          <div key="hasil" className={tabSlideClass} data-teacher-tab-panel="hasil">
+          <div
+            key="hasil"
+            className={tabSlideClass}
+            data-teacher-tab-panel="hasil"
+            data-motion-active={tabMotion.motionActive ? 'true' : undefined}
+            onAnimationEnd={tabMotion.onAnimationEnd}
+          >
             <Suspense fallback={<TabLoading />}>
               <ResultsPanel
                 key={resultsPresetStatus}

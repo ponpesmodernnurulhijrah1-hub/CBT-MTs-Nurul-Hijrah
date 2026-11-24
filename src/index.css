@@ -6,6 +6,11 @@
     --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
     --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
     --ease-ios: cubic-bezier(0.22, 1, 0.36, 1);
+    --ease-ios-fluid: cubic-bezier(0.16, 1, 0.3, 1);
+    --ease-ios-spring: cubic-bezier(0.28, 1.32, 0.42, 1);
+    --ease-ios-elastic: cubic-bezier(0.34, 1.56, 0.64, 1);
+    --aurora-dx: 0px;
+    --aurora-dy: 0px;
   }
 
   html {
@@ -25,6 +30,7 @@
     overflow-x: clip;
     padding-left: env(safe-area-inset-left, 0px);
     padding-right: env(safe-area-inset-right, 0px);
+    -webkit-tap-highlight-color: transparent;
   }
 
   h1, h2, h3, .font-display {
@@ -38,138 +44,293 @@
 }
 
 /* ============================================================================
-   iOS 26 / visionOS Animated Sky-Blue, Pastel-Indigo & Pearl-White Mesh
+   Hyper-Liquid Interactive Fluid Aurora Backdrop (Sapphire, Cyan, Purple, Pearl)
    ============================================================================ */
 .ios-mesh-bg {
   position: relative;
-  background-color: #eef4ff;
+  background-color: #eaf2ff;
 }
 
 .ios-mesh-backdrop {
   position: fixed;
   inset: 0;
   overflow: hidden;
+  contain: layout style paint;
   background:
-    radial-gradient(56rem 56rem at 12% 10%, rgba(125, 211, 252, 0.56) 0%, transparent 64%),
-    radial-gradient(54rem 54rem at 88% 12%, rgba(165, 180, 252, 0.54) 0%, transparent 64%),
-    radial-gradient(50rem 50rem at 76% 82%, rgba(186, 230, 253, 0.62) 0%, transparent 66%),
-    radial-gradient(48rem 48rem at 16% 84%, rgba(199, 210, 254, 0.5) 0%, transparent 65%),
-    linear-gradient(155deg, #f8fbff 0%, #eaf2ff 48%, #f3f5ff 100%);
+    radial-gradient(60rem 60rem at 12% 10%, rgba(37, 99, 235, 0.32) 0%, transparent 62%),
+    radial-gradient(56rem 56rem at 88% 12%, rgba(168, 85, 247, 0.28) 0%, transparent 62%),
+    radial-gradient(54rem 54rem at 76% 84%, rgba(34, 211, 238, 0.34) 0%, transparent 64%),
+    radial-gradient(48rem 48rem at 16% 86%, rgba(241, 245, 249, 0.85) 0%, transparent 65%),
+    linear-gradient(148deg, #f8fbff 0%, #e4efff 46%, #efeaff 100%);
 }
 
-.ios-mesh-backdrop::before,
-.ios-mesh-backdrop::after {
-  content: "";
+.aurora-blob {
   position: absolute;
   border-radius: 9999px;
   pointer-events: none;
-  will-change: transform;
+  will-change: auto;
 }
 
-.ios-mesh-backdrop::before {
-  width: 66vmax;
-  height: 66vmax;
+.aurora-blob-sapphire {
+  width: 60vmax;
+  height: 58vmax;
   top: -18vmax;
   left: -12vmax;
   background: radial-gradient(
     circle at 42% 45%,
-    rgba(125, 211, 252, 0.52) 0%,
-    rgba(165, 180, 252, 0.3) 42%,
+    rgba(29, 78, 216, 0.56) 0%,
+    rgba(59, 130, 246, 0.34) 44%,
     transparent 72%
   );
-  animation: meshOrbFloatA 26s ease-in-out infinite alternate;
 }
 
-.ios-mesh-backdrop::after {
-  width: 62vmax;
-  height: 62vmax;
-  right: -16vmax;
-  bottom: -20vmax;
+.aurora-blob-cyan {
+  width: 56vmax;
+  height: 54vmax;
+  top: 10vh;
+  right: -14vmax;
   background: radial-gradient(
-    circle at 55% 52%,
-    rgba(165, 180, 252, 0.48) 0%,
-    rgba(186, 230, 253, 0.36) 44%,
+    circle at 52% 48%,
+    rgba(6, 182, 212, 0.52) 0%,
+    rgba(103, 232, 249, 0.32) 44%,
     transparent 74%
   );
-  animation: meshOrbFloatB 32s ease-in-out infinite alternate;
 }
 
-@keyframes meshOrbFloatA {
+.aurora-blob-purple {
+  width: 54vmax;
+  height: 54vmax;
+  bottom: -18vmax;
+  right: 12vw;
+  background: radial-gradient(
+    circle at 54% 52%,
+    rgba(168, 85, 247, 0.44) 0%,
+    rgba(129, 140, 248, 0.28) 46%,
+    transparent 74%
+  );
+}
+
+.aurora-blob-pearl {
+  width: 52vmax;
+  height: 50vmax;
+  bottom: -14vmax;
+  left: -8vmax;
+  background: radial-gradient(
+    circle at 48% 50%,
+    rgba(255, 255, 255, 0.92) 0%,
+    rgba(226, 232, 240, 0.62) 45%,
+    transparent 75%
+  );
+}
+
+.aurora-cursor-orb {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 48vmax;
+  height: 48vmax;
+  margin-left: -24vmax;
+  margin-top: -24vmax;
+  border-radius: 9999px;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(
+    circle at 50% 50%,
+    rgba(34, 211, 238, 0.32) 0%,
+    rgba(168, 85, 247, 0.18) 42%,
+    transparent 72%
+  );
+  transform: translate3d(calc(var(--aurora-dx, 0px) * 2.2), calc(var(--aurora-dy, 0px) * 2.2), 0);
+  transition: transform 720ms var(--ease-ios-fluid), opacity 360ms ease;
+}
+
+/* Continuous organic lava-lamp flow & cursor reactivity strictly on desktop fine-pointer */
+@media (min-width: 768px) and (hover: hover) and (pointer: fine) {
+  .aurora-blob-sapphire {
+    will-change: transform;
+    translate: calc(var(--aurora-dx, 0px) * 0.55) calc(var(--aurora-dy, 0px) * 0.55);
+    transition: translate 850ms var(--ease-ios-fluid);
+    animation: auroraLavaA 22s ease-in-out infinite alternate;
+  }
+
+  .aurora-blob-cyan {
+    will-change: transform;
+    translate: calc(var(--aurora-dx, 0px) * -0.65) calc(var(--aurora-dy, 0px) * 0.45);
+    transition: translate 900ms var(--ease-ios-fluid);
+    animation: auroraLavaB 26s ease-in-out infinite alternate;
+  }
+
+  .aurora-blob-purple {
+    will-change: transform;
+    translate: calc(var(--aurora-dx, 0px) * 0.7) calc(var(--aurora-dy, 0px) * -0.55);
+    transition: translate 950ms var(--ease-ios-fluid);
+    animation: auroraLavaC 29s ease-in-out infinite alternate;
+  }
+
+  .aurora-blob-pearl {
+    will-change: transform;
+    translate: calc(var(--aurora-dx, 0px) * -0.4) calc(var(--aurora-dy, 0px) * -0.4);
+    transition: translate 800ms var(--ease-ios-fluid);
+    animation: auroraLavaD 24s ease-in-out infinite alternate;
+  }
+
+  .aurora-cursor-orb {
+    opacity: 0.9;
+  }
+}
+
+@media (max-width: 767px), (pointer: coarse) {
+  .aurora-blob,
+  .aurora-cursor-orb {
+    will-change: auto;
+    animation: none;
+    translate: none;
+  }
+
+  .aurora-cursor-orb {
+    display: none;
+  }
+}
+
+@keyframes auroraLavaA {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+    border-radius: 56% 44% 62% 38% / 44% 58% 42% 56%;
+  }
+  50% {
+    transform: translate3d(7vw, 5vh, 0) scale(1.08);
+    border-radius: 42% 58% 46% 54% / 58% 40% 60% 42%;
+  }
+  100% {
+    transform: translate3d(-3vw, 9vh, 0) scale(0.96);
+    border-radius: 60% 40% 54% 46% / 48% 54% 46% 52%;
+  }
+}
+
+@keyframes auroraLavaB {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+    border-radius: 46% 54% 42% 58% / 54% 46% 56% 44%;
+  }
+  50% {
+    transform: translate3d(-6vw, 4vh, 0) scale(1.09);
+    border-radius: 58% 42% 54% 46% / 42% 58% 44% 56%;
+  }
+  100% {
+    transform: translate3d(-2vw, -7vh, 0) scale(0.97);
+    border-radius: 48% 52% 60% 40% / 52% 48% 50% 50%;
+  }
+}
+
+@keyframes auroraLavaC {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+    border-radius: 52% 48% 58% 42% / 46% 54% 42% 58%;
+  }
+  50% {
+    transform: translate3d(-5vw, -6vh, 0) scale(1.1);
+    border-radius: 40% 60% 44% 56% / 60% 42% 58% 40%;
+  }
+  100% {
+    transform: translate3d(5vw, -2vh, 0) scale(0.95);
+    border-radius: 56% 44% 50% 50% / 48% 52% 46% 54%;
+  }
+}
+
+@keyframes auroraLavaD {
   0% {
     transform: translate3d(0, 0, 0) scale(1);
   }
   50% {
-    transform: translate3d(6vw, 4vh, 0) scale(1.06);
+    transform: translate3d(5vw, -5vh, 0) scale(1.06);
   }
   100% {
-    transform: translate3d(-3vw, 8vh, 0) scale(0.98);
-  }
-}
-
-@keyframes meshOrbFloatB {
-  0% {
-    transform: translate3d(0, 0, 0) scale(1);
-  }
-  50% {
-    transform: translate3d(-5vw, -6vh, 0) scale(1.08);
-  }
-  100% {
-    transform: translate3d(4vw, -3vh, 0) scale(0.97);
+    transform: translate3d(-4vw, 3vh, 0) scale(0.98);
   }
 }
 
 /* ============================================================================
-   iOS 26 / visionOS Liquid Glass Surfaces (Layered in @layer components so
-   Tailwind utilities like fixed/absolute/rounded/bg-* compose cleanly)
+   Hyper-Liquid Glass Surfaces: Refractive Chromatic Dispersion & Dual 3D Depth
+   (Layered in @layer components so Tailwind position utilities never conflict)
    ============================================================================ */
 @layer components {
   .surface-card,
   .glass-card {
+    position: relative;
+    contain: style;
+    will-change: auto;
     background: linear-gradient(
       145deg,
-      rgba(255, 255, 255, 0.56) 0%,
-      rgba(241, 247, 255, 0.34) 52%,
-      rgba(255, 255, 255, 0.24) 100%
+      rgba(255, 255, 255, 0.58) 0%,
+      rgba(241, 247, 255, 0.36) 52%,
+      rgba(255, 255, 255, 0.25) 100%
     );
-    backdrop-filter: blur(24px) saturate(180%);
-    -webkit-backdrop-filter: blur(24px) saturate(180%);
-    border: 1px solid rgba(255, 255, 255, 0.36);
-    border-top-color: rgba(255, 255, 255, 0.72);
-    border-left-color: rgba(255, 255, 255, 0.56);
+    backdrop-filter: blur(32px) saturate(210%) contrast(108%);
+    -webkit-backdrop-filter: blur(32px) saturate(210%) contrast(108%);
+    border: 1px solid rgba(255, 255, 255, 0.42);
+    border-top-color: rgba(255, 255, 255, 0.86);
+    border-left-color: rgba(255, 255, 255, 0.72);
     border-radius: 22px;
     box-shadow:
-      0 20px 44px -20px rgba(30, 58, 138, 0.16),
-      0 4px 14px -4px rgba(15, 23, 42, 0.06),
-      inset 0 1px 1px rgba(255, 255, 255, 0.85),
-      inset 1px 0 1px rgba(255, 255, 255, 0.48),
-      inset 0 -10px 22px -18px rgba(147, 197, 253, 0.24);
-    transition: transform 280ms var(--ease-ios), opacity 220ms ease, border-color 220ms ease;
+      0 22px 48px -20px rgba(30, 58, 138, 0.2),
+      0 4px 16px -4px rgba(15, 23, 42, 0.08),
+      inset 1.5px 1.5px 2px rgba(255, 255, 255, 0.94),
+      inset -2px -2px 10px rgba(30, 58, 138, 0.12);
+    transition: transform 360ms var(--ease-ios-elastic), opacity 240ms ease, border-color 240ms ease;
+  }
+
+  .surface-card::before,
+  .glass-card::before,
+  .surface-card-interactive::before,
+  .exam-reading-surface::before,
+  .glass-modal::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 2px;
+    pointer-events: none;
+    background: linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.96) 0%,
+      rgba(34, 211, 238, 0.68) 28%,
+      rgba(255, 255, 255, 0.78) 52%,
+      rgba(232, 121, 249, 0.56) 76%,
+      rgba(255, 255, 255, 0.88) 100%
+    );
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
   }
 
   .surface-card-interactive {
     position: relative;
+    contain: style;
+    will-change: auto;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
     background: linear-gradient(
       145deg,
-      rgba(255, 255, 255, 0.6) 0%,
-      rgba(239, 246, 255, 0.36) 55%,
-      rgba(255, 255, 255, 0.25) 100%
+      rgba(255, 255, 255, 0.62) 0%,
+      rgba(239, 246, 255, 0.38) 55%,
+      rgba(255, 255, 255, 0.26) 100%
     );
-    backdrop-filter: blur(24px) saturate(180%);
-    -webkit-backdrop-filter: blur(24px) saturate(180%);
-    border: 1px solid rgba(255, 255, 255, 0.38);
-    border-top-color: rgba(255, 255, 255, 0.76);
-    border-left-color: rgba(255, 255, 255, 0.58);
+    backdrop-filter: blur(32px) saturate(210%) contrast(108%);
+    -webkit-backdrop-filter: blur(32px) saturate(210%) contrast(108%);
+    border: 1px solid rgba(255, 255, 255, 0.44);
+    border-top-color: rgba(255, 255, 255, 0.88);
+    border-left-color: rgba(255, 255, 255, 0.74);
     border-radius: 22px;
     box-shadow:
-      0 16px 36px -18px rgba(30, 58, 138, 0.18),
+      0 18px 38px -18px rgba(30, 58, 138, 0.2),
       0 4px 12px -4px rgba(15, 23, 42, 0.06),
-      inset 0 1px 1px rgba(255, 255, 255, 0.88),
-      inset 1px 0 1px rgba(255, 255, 255, 0.5);
+      inset 1.5px 1.5px 2px rgba(255, 255, 255, 0.94),
+      inset -2px -2px 10px rgba(30, 58, 138, 0.11);
     transition:
-      transform 280ms var(--ease-ios),
-      opacity 200ms ease,
-      border-color 200ms ease,
-      box-shadow 260ms var(--ease-ios);
+      transform 340ms var(--ease-ios-elastic),
+      opacity 220ms ease,
+      border-color 220ms ease,
+      box-shadow 300ms var(--ease-ios-fluid);
   }
 
   .surface-card-interactive::after {
@@ -180,69 +341,83 @@
     pointer-events: none;
     opacity: 0;
     background: radial-gradient(
-      200px circle at var(--lx, 50%) var(--ly, 50%),
-      rgba(255, 255, 255, 0.58) 0%,
-      rgba(186, 230, 253, 0.22) 42%,
-      transparent 75%
+      240px circle at var(--lx, 50%) var(--ly, 50%),
+      rgba(255, 255, 255, 0.72) 0%,
+      rgba(34, 211, 238, 0.24) 36%,
+      rgba(232, 121, 249, 0.14) 56%,
+      transparent 76%
     );
-    transition: opacity 220ms var(--ease-ios);
+    transition: opacity 260ms var(--ease-ios-fluid);
   }
 
   .surface-card-interactive:hover {
-    transform: translate3d(0, -2px, 0);
-    border-color: rgba(255, 255, 255, 0.88);
+    transform: translate3d(var(--mx, 0px), calc(var(--my, 0px) - 2.5px), 0);
+    border-color: rgba(255, 255, 255, 0.94);
     box-shadow:
-      0 22px 44px -18px rgba(37, 99, 235, 0.22),
+      0 24px 46px -18px rgba(37, 99, 235, 0.24),
       0 6px 16px -4px rgba(15, 23, 42, 0.08),
-      inset 0 1px 1px rgba(255, 255, 255, 0.95),
-      inset 1px 0 1px rgba(255, 255, 255, 0.62);
+      inset 1.5px 1.5px 2px rgba(255, 255, 255, 0.98),
+      inset -2px -2px 10px rgba(30, 58, 138, 0.12);
   }
 
   .surface-card-interactive:hover::after,
-  .surface-card-interactive:active::after {
+  .surface-card-interactive:active::after,
+  .surface-card-interactive[data-liquid-gleam="1"]::after {
     opacity: 1;
   }
 
-  button.surface-card-interactive:active:not(:disabled) {
-    transform: scale3d(0.97, 0.97, 1);
+  .surface-card-interactive:active,
+  .surface-card-interactive[data-liquid-gleam="1"] {
+    will-change: transform;
   }
 
-  /* Higher-contrast frosted reading glass for exam stems & answer readability */
+  button.surface-card-interactive:active:not(:disabled) {
+    transform: scale3d(0.966, 0.966, 1);
+    transition-duration: 110ms;
+    transition-timing-function: var(--ease-ios-fluid);
+  }
+
+  /* Higher-contrast frosted reading shield for exam stems & answer readability */
   .exam-reading-surface {
+    position: relative;
+    contain: style;
+    will-change: auto;
     background: linear-gradient(
       148deg,
-      rgba(255, 255, 255, 0.88) 0%,
-      rgba(248, 251, 255, 0.82) 55%,
-      rgba(255, 255, 255, 0.78) 100%
+      rgba(255, 255, 255, 0.91) 0%,
+      rgba(248, 251, 255, 0.86) 55%,
+      rgba(255, 255, 255, 0.83) 100%
     );
-    backdrop-filter: blur(24px) saturate(180%);
-    -webkit-backdrop-filter: blur(24px) saturate(180%);
-    border: 1px solid rgba(255, 255, 255, 0.52);
-    border-top-color: rgba(255, 255, 255, 0.92);
-    border-left-color: rgba(255, 255, 255, 0.82);
+    backdrop-filter: blur(32px) saturate(210%) contrast(108%);
+    -webkit-backdrop-filter: blur(32px) saturate(210%) contrast(108%);
+    border: 1px solid rgba(255, 255, 255, 0.6);
+    border-top-color: rgba(255, 255, 255, 0.95);
+    border-left-color: rgba(255, 255, 255, 0.86);
     border-radius: 24px;
     color: #090d16;
     box-shadow:
-      0 22px 48px -20px rgba(30, 58, 138, 0.16),
+      0 24px 50px -20px rgba(30, 58, 138, 0.18),
       0 6px 16px -6px rgba(15, 23, 42, 0.06),
-      inset 0 1px 1px rgba(255, 255, 255, 0.95),
-      inset 1px 0 1px rgba(255, 255, 255, 0.68);
+      inset 1.5px 1.5px 2px rgba(255, 255, 255, 0.98),
+      inset -2px -2px 10px rgba(30, 58, 138, 0.1);
   }
 
-  /* Crisp answer option liquid glass card with specular follow & spring press */
+  /* Crisp answer option liquid glass card with cursor spotlight & liquid ripples */
   .liquid-option-card {
     position: relative;
-    backdrop-filter: blur(18px) saturate(170%);
-    -webkit-backdrop-filter: blur(18px) saturate(170%);
+    contain: layout style;
+    will-change: auto;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
     box-shadow:
-      0 8px 20px -14px rgba(30, 58, 138, 0.16),
-      inset 0 1px 0 rgba(255, 255, 255, 0.85),
-      inset 1px 0 0 rgba(255, 255, 255, 0.55);
+      0 10px 22px -14px rgba(30, 58, 138, 0.18),
+      inset 1px 1px 1.5px rgba(255, 255, 255, 0.92),
+      inset -1.5px -1.5px 6px rgba(30, 58, 138, 0.08);
     transition:
-      transform 220ms var(--ease-ios),
-      border-color 200ms ease,
-      background-color 200ms ease,
-      box-shadow 220ms var(--ease-ios);
+      transform 340ms var(--ease-ios-elastic),
+      border-color 220ms ease,
+      background-color 220ms ease,
+      box-shadow 260ms var(--ease-ios-fluid);
   }
 
   .liquid-option-card::after {
@@ -253,113 +428,128 @@
     pointer-events: none;
     opacity: 0;
     background: radial-gradient(
-      190px circle at var(--lx, 50%) var(--ly, 50%),
-      rgba(255, 255, 255, 0.52) 0%,
-      rgba(125, 211, 252, 0.18) 42%,
-      transparent 75%
+      210px circle at var(--lx, 50%) var(--ly, 50%),
+      rgba(255, 255, 255, 0.64) 0%,
+      rgba(34, 211, 238, 0.22) 40%,
+      rgba(232, 121, 249, 0.12) 60%,
+      transparent 78%
     );
-    transition: opacity 200ms var(--ease-ios);
+    transition: opacity 250ms var(--ease-ios-fluid);
   }
 
   .liquid-option-card:hover::after,
-  .liquid-option-card:active::after {
+  .liquid-option-card:active::after,
+  .liquid-option-card[data-liquid-gleam="1"]::after {
     opacity: 1;
   }
 
+  .liquid-option-card:active,
+  .liquid-option-card[data-liquid-gleam="1"] {
+    will-change: transform;
+  }
+
   .liquid-option-card:active {
-    transform: scale3d(0.97, 0.97, 1);
+    transform: scale3d(0.968, 0.968, 1);
+    transition-duration: 110ms;
+    transition-timing-function: var(--ease-ios-fluid);
   }
 
   /* Inner translucent sub-pane */
   .glass-subtle {
+    contain: style;
     background: linear-gradient(
       145deg,
-      rgba(255, 255, 255, 0.54) 0%,
-      rgba(241, 247, 255, 0.36) 100%
+      rgba(255, 255, 255, 0.6) 0%,
+      rgba(241, 247, 255, 0.42) 100%
     );
-    border: 1px solid rgba(255, 255, 255, 0.42);
-    border-top-color: rgba(255, 255, 255, 0.74);
-    border-left-color: rgba(255, 255, 255, 0.58);
+    border: 1px solid rgba(255, 255, 255, 0.5);
+    border-top-color: rgba(255, 255, 255, 0.84);
+    border-left-color: rgba(255, 255, 255, 0.68);
     box-shadow:
-      0 8px 20px -16px rgba(30, 58, 138, 0.14),
-      inset 0 1px 0 rgba(255, 255, 255, 0.75),
-      inset 1px 0 0 rgba(255, 255, 255, 0.45);
+      0 8px 20px -16px rgba(30, 58, 138, 0.16),
+      inset 1px 1px 1.5px rgba(255, 255, 255, 0.85),
+      inset -1.5px -1.5px 6px rgba(30, 58, 138, 0.08);
   }
 
-  /* iOS Dark Liquid Glass Panel (Sidebar / Command Hero / Mobile Install Card) */
+  /* Hyper Dark Liquid Glass Panel */
   .glass-dark {
+    position: relative;
+    contain: style;
+    will-change: auto;
     background: linear-gradient(
       148deg,
-      rgba(15, 23, 42, 0.8) 0%,
-      rgba(30, 41, 82, 0.74) 55%,
-      rgba(15, 23, 42, 0.84) 100%
+      rgba(15, 23, 42, 0.82) 0%,
+      rgba(30, 41, 82, 0.76) 55%,
+      rgba(15, 23, 42, 0.86) 100%
     );
-    backdrop-filter: blur(24px) saturate(180%);
-    -webkit-backdrop-filter: blur(24px) saturate(180%);
-    border: 1px solid rgba(255, 255, 255, 0.18);
-    border-top-color: rgba(255, 255, 255, 0.45);
-    border-left-color: rgba(255, 255, 255, 0.32);
+    backdrop-filter: blur(32px) saturate(210%) contrast(108%);
+    -webkit-backdrop-filter: blur(32px) saturate(210%) contrast(108%);
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    border-top-color: rgba(165, 243, 252, 0.52);
+    border-left-color: rgba(255, 255, 255, 0.36);
     box-shadow:
-      0 22px 44px -18px rgba(15, 23, 42, 0.45),
-      inset 0 1px 1px rgba(255, 255, 255, 0.28),
-      inset 1px 0 1px rgba(255, 255, 255, 0.16);
+      0 24px 48px -18px rgba(15, 23, 42, 0.48),
+      inset 1.5px 1.5px 2px rgba(255, 255, 255, 0.32),
+      inset -2px -2px 10px rgba(2, 6, 23, 0.36);
   }
 
-  /* iOS Frosted Modal Sheet */
+  /* Hyper Frosted Modal Sheet */
   .glass-modal {
+    position: relative;
+    contain: style;
+    will-change: auto;
     background: linear-gradient(
       148deg,
-      rgba(255, 255, 255, 0.88) 0%,
-      rgba(241, 247, 255, 0.82) 100%
+      rgba(255, 255, 255, 0.92) 0%,
+      rgba(241, 247, 255, 0.86) 100%
     );
-    backdrop-filter: blur(24px) saturate(180%);
-    -webkit-backdrop-filter: blur(24px) saturate(180%);
-    border: 1px solid rgba(255, 255, 255, 0.48);
-    border-top-color: rgba(255, 255, 255, 0.92);
-    border-left-color: rgba(255, 255, 255, 0.78);
+    backdrop-filter: blur(32px) saturate(210%) contrast(108%);
+    -webkit-backdrop-filter: blur(32px) saturate(210%) contrast(108%);
+    border: 1px solid rgba(255, 255, 255, 0.54);
+    border-top-color: rgba(255, 255, 255, 0.94);
+    border-left-color: rgba(255, 255, 255, 0.82);
     border-radius: 26px;
     box-shadow:
-      0 28px 60px -18px rgba(15, 23, 42, 0.28),
-      0 8px 20px -6px rgba(30, 58, 138, 0.12),
-      inset 0 1px 1px rgba(255, 255, 255, 0.95),
-      inset 1px 0 1px rgba(255, 255, 255, 0.65);
-    animation: modalSpringIn 300ms var(--ease-ios);
+      0 30px 64px -18px rgba(15, 23, 42, 0.3),
+      0 8px 22px -6px rgba(30, 58, 138, 0.14),
+      inset 1.5px 1.5px 2px rgba(255, 255, 255, 0.96),
+      inset -2px -2px 10px rgba(30, 58, 138, 0.12);
+    animation: modalSpringIn 400ms var(--ease-ios-elastic);
   }
 
-  /* Tactile iOS Glass Input */
+  /* Tactile iOS Glass Input (avoids nested backdrop-blur overhead inside blurred cards) */
   .glass-input {
-    background-color: rgba(255, 255, 255, 0.72);
-    backdrop-filter: blur(12px) saturate(160%);
-    -webkit-backdrop-filter: blur(12px) saturate(160%);
-    border: 1px solid rgba(255, 255, 255, 0.56);
-    border-top-color: rgba(255, 255, 255, 0.88);
-    border-left-color: rgba(255, 255, 255, 0.78);
+    background-color: rgba(255, 255, 255, 0.82);
+    border: 1px solid rgba(255, 255, 255, 0.66);
+    border-top-color: rgba(255, 255, 255, 0.94);
+    border-left-color: rgba(255, 255, 255, 0.84);
     box-shadow:
       inset 0 1px 2px rgba(15, 23, 42, 0.05),
-      0 2px 6px -4px rgba(30, 58, 138, 0.08);
-    transition: border-color 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
+      0 2px 8px -4px rgba(30, 58, 138, 0.1);
+    transition: border-color 180ms ease, background-color 180ms ease, box-shadow 200ms var(--ease-ios-fluid);
   }
 
   .glass-input:focus {
-    background-color: rgba(255, 255, 255, 0.94);
-    border-color: rgba(37, 99, 235, 0.5);
+    background-color: rgba(255, 255, 255, 0.97);
+    border-color: rgba(37, 99, 235, 0.54);
     box-shadow:
-      0 0 0 3px rgba(96, 165, 250, 0.22),
+      0 0 0 3px rgba(34, 211, 238, 0.24),
       inset 0 1px 2px rgba(15, 23, 42, 0.03);
     outline: none;
   }
 
-  /* Tactile iOS Liquid Glass Button System:
-     ::before = specular top & left luminous bevel
-     ::after  = cursor-following radial specular shimmer */
+  /* Tactile Hyper-Liquid Button System (Magnetic pull + Chromatic bevel + Cursor spotlight + Ripple) */
   .btn-press {
     position: relative;
+    will-change: auto;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
     transition:
-      transform 220ms var(--ease-ios),
+      transform 340ms var(--ease-ios-elastic),
       opacity 180ms ease,
-      background-color 180ms ease,
-      border-color 180ms ease,
-      box-shadow 220ms var(--ease-ios);
+      background-color 200ms ease,
+      border-color 200ms ease,
+      box-shadow 260ms var(--ease-ios-fluid);
   }
 
   .btn-press::before {
@@ -369,8 +559,8 @@
     border-radius: inherit;
     pointer-events: none;
     box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.5),
-      inset 1px 0 0 rgba(255, 255, 255, 0.28);
+      inset 1px 1px 1.5px rgba(255, 255, 255, 0.68),
+      inset -1px -1px 4px rgba(30, 58, 138, 0.1);
   }
 
   .btn-press::after {
@@ -381,98 +571,245 @@
     pointer-events: none;
     opacity: 0;
     background: radial-gradient(
-      120px circle at var(--lx, 50%) var(--ly, 50%),
-      rgba(255, 255, 255, 0.48) 0%,
-      rgba(186, 230, 253, 0.2) 44%,
-      transparent 75%
+      145px circle at var(--lx, 50%) var(--ly, 50%),
+      rgba(255, 255, 255, 0.68) 0%,
+      rgba(103, 232, 249, 0.26) 42%,
+      rgba(232, 121, 249, 0.12) 64%,
+      transparent 78%
     );
-    transition: opacity 200ms var(--ease-ios);
+    transition: opacity 250ms var(--ease-ios-fluid);
   }
 
   .btn-press:hover:not(:disabled) {
-    transform: translate3d(0, -1px, 0);
+    transform: translate3d(var(--mx, 0px), calc(var(--my, 0px) - 1.5px), 0);
   }
 
   .btn-press:hover:not(:disabled)::after,
-  .btn-press:active:not(:disabled)::after {
+  .btn-press:active:not(:disabled)::after,
+  .btn-press[data-liquid-gleam="1"]:not(:disabled)::after {
     opacity: 1;
   }
 
+  .btn-press:active:not(:disabled),
+  .btn-press[data-liquid-gleam="1"]:not(:disabled) {
+    will-change: transform;
+  }
+
   .btn-press:active:not(:disabled) {
-    transform: scale3d(0.97, 0.97, 1);
+    transform: scale3d(0.964, 0.964, 1);
+    transition-duration: 105ms;
+    transition-timing-function: var(--ease-ios-fluid);
+  }
+
+  @media (hover: hover) and (pointer: fine) {
+    .btn-press:hover:not(:disabled),
+    .surface-card-interactive:hover,
+    .liquid-option-card:hover {
+      will-change: transform;
+    }
+
+    /* Optical SVG edge refraction strictly on desktop container borders (never blurs inner text) */
+    .surface-card::before,
+    .glass-card::before,
+    .exam-reading-surface::before,
+    .glass-modal::before {
+      filter: url(#hyper-glass-refract);
+    }
+  }
+
+  /* Liquid Water Ripple (GPU-composited scale3d + opacity, auto-cleans after 560ms) */
+  .liquid-ripple-layer {
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    overflow: hidden;
+    pointer-events: none;
+    z-index: 1;
+  }
+
+  .liquid-ripple-wave {
+    position: absolute;
+    border-radius: 9999px;
+    pointer-events: none;
+    will-change: transform, opacity;
+    background: radial-gradient(
+      circle at center,
+      rgba(255, 255, 255, 0) 24%,
+      rgba(103, 232, 249, 0.34) 56%,
+      rgba(255, 255, 255, 0.62) 78%,
+      rgba(255, 255, 255, 0) 100%
+    );
+    animation: liquidWaterRipple 540ms var(--ease-ios-fluid) forwards;
   }
 
   /* Translucent Liquid Glass Header & Footer */
   .liquid-header {
+    position: relative;
+    contain: style;
+    will-change: auto;
     background: linear-gradient(
       180deg,
-      rgba(255, 255, 255, 0.62) 0%,
-      rgba(241, 247, 255, 0.44) 100%
+      rgba(255, 255, 255, 0.68) 0%,
+      rgba(241, 247, 255, 0.5) 100%
     );
-    backdrop-filter: blur(24px) saturate(180%);
-    -webkit-backdrop-filter: blur(24px) saturate(180%);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.56);
+    backdrop-filter: blur(32px) saturate(210%) contrast(108%);
+    -webkit-backdrop-filter: blur(32px) saturate(210%) contrast(108%);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.62);
     box-shadow:
-      0 10px 30px -16px rgba(30, 58, 138, 0.14),
-      inset 0 1px 0 rgba(255, 255, 255, 0.88);
+      0 12px 32px -16px rgba(30, 58, 138, 0.16),
+      inset 0 1px 0 rgba(255, 255, 255, 0.94),
+      inset 0 -1px 0 rgba(165, 243, 252, 0.32);
   }
 
-  /* Morphing Pill Droplets for Active Tabs & Question Numbers */
-  .liquid-morph-pill {
-    position: absolute;
-    top: 0;
-    left: 0;
-    pointer-events: none;
-    background: linear-gradient(
-      145deg,
-      rgba(255, 255, 255, 0.94) 0%,
-      rgba(232, 242, 255, 0.82) 100%
-    );
-    backdrop-filter: blur(18px) saturate(180%);
-    -webkit-backdrop-filter: blur(18px) saturate(180%);
-    border: 1px solid rgba(255, 255, 255, 0.72);
-    border-top-color: rgba(255, 255, 255, 0.98);
-    border-left-color: rgba(255, 255, 255, 0.9);
-    box-shadow:
-      0 8px 20px -8px rgba(37, 99, 235, 0.24),
-      0 2px 6px -2px rgba(15, 23, 42, 0.08),
-      inset 0 1px 1px rgba(255, 255, 255, 0.98);
-    will-change: transform, width, height;
+  /* SVG Gooey Fluid Morphing Backdrop Stage (keeps text layers razor-sharp above) */
+  .liquid-gooey-stage {
+    filter: url(#liquid-gooey);
+    overflow: visible;
   }
 
-  .liquid-morph-pill-accent {
-    position: absolute;
-    top: 0;
-    left: 0;
-    pointer-events: none;
-    background: linear-gradient(
-      135deg,
-      rgba(4, 120, 87, 0.94) 0%,
-      rgba(13, 148, 136, 0.9) 55%,
-      rgba(37, 99, 235, 0.86) 100%
-    );
-    border: 1px solid rgba(255, 255, 255, 0.35);
-    border-top-color: rgba(255, 255, 255, 0.7);
-    border-left-color: rgba(255, 255, 255, 0.52);
-    box-shadow:
-      0 10px 24px -10px rgba(4, 120, 87, 0.52),
-      0 4px 12px -4px rgba(37, 99, 235, 0.22),
-      inset 0 1px 1px rgba(255, 255, 255, 0.58);
-    will-change: transform, width, height;
-  }
-
+  /* Hyper-Liquid Viscous Morphing Droplet Pills */
+  .liquid-morph-pill,
+  .liquid-morph-pill-accent,
   .liquid-morph-ring {
     position: absolute;
     top: 0;
     left: 0;
     pointer-events: none;
+    contain: layout style;
+    will-change: auto;
+  }
+
+  .liquid-morph-pill[data-morph-animating="true"],
+  .liquid-morph-pill-accent[data-morph-animating="true"],
+  .liquid-morph-ring[data-morph-animating="true"] {
+    will-change: transform;
+  }
+
+  .liquid-morph-pill::before,
+  .liquid-morph-pill-accent::before,
+  .liquid-morph-ring::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    will-change: auto;
+    transition: transform 360ms var(--ease-ios-elastic), filter 260ms ease;
+  }
+
+  /* Trailing mercury droplet satellite that merges inside .liquid-gooey-stage */
+  .liquid-morph-pill::after,
+  .liquid-morph-pill-accent::after {
+    content: "";
+    position: absolute;
+    top: 18%;
+    left: 22%;
+    width: 56%;
+    height: 64%;
+    border-radius: inherit;
+    pointer-events: none;
+    opacity: 0;
+    transform: scale3d(0.7, 0.7, 1);
+    transition: transform 280ms var(--ease-ios-elastic), opacity 220ms ease;
+  }
+
+  [data-morphing="true"]::before {
+    will-change: transform;
+  }
+
+  .liquid-morph-pill::before,
+  .liquid-morph-pill::after {
+    background: linear-gradient(
+      145deg,
+      rgba(255, 255, 255, 0.96) 0%,
+      rgba(224, 242, 254, 0.9) 100%
+    );
+  }
+
+  .liquid-morph-pill::before {
+    border: 1px solid rgba(255, 255, 255, 0.78);
+    border-top-color: rgba(255, 255, 255, 0.98);
+    border-left-color: rgba(165, 243, 252, 0.92);
+    box-shadow:
+      0 8px 20px -8px rgba(37, 99, 235, 0.26),
+      0 2px 6px -2px rgba(15, 23, 42, 0.08),
+      inset 1px 1px 1.5px rgba(255, 255, 255, 0.98);
+  }
+
+  .liquid-morph-pill-accent::before,
+  .liquid-morph-pill-accent::after {
+    background: linear-gradient(
+      135deg,
+      rgba(4, 120, 87, 0.95) 0%,
+      rgba(13, 148, 136, 0.92) 55%,
+      rgba(37, 99, 235, 0.88) 100%
+    );
+  }
+
+  .liquid-morph-pill-accent::before {
+    border: 1px solid rgba(255, 255, 255, 0.42);
+    border-top-color: rgba(165, 243, 252, 0.78);
+    border-left-color: rgba(255, 255, 255, 0.62);
+    box-shadow:
+      0 10px 24px -10px rgba(4, 120, 87, 0.54),
+      0 4px 12px -4px rgba(37, 99, 235, 0.24),
+      inset 1px 1px 1.5px rgba(255, 255, 255, 0.62);
+  }
+
+  .liquid-morph-ring {
     border-radius: 0.75rem;
+  }
+
+  .liquid-morph-ring::before {
     border: 2px solid rgba(15, 23, 42, 0.88);
     box-shadow:
-      0 0 0 3px rgba(125, 211, 252, 0.45),
+      0 0 0 3px rgba(34, 211, 238, 0.52),
       0 8px 18px -6px rgba(37, 99, 235, 0.36),
-      inset 0 1px 0 rgba(255, 255, 255, 0.8);
-    will-change: transform, width, height;
+      inset 0 1px 0 rgba(255, 255, 255, 0.86);
+  }
+
+  /* Organic mercury droplet swell/stretch & satellite pull while sliding between tabs */
+  [data-morphing="true"][data-morph-axis="horizontal"]::before {
+    transform: scale3d(1.08, 0.92, 1);
+  }
+
+  [data-morphing="true"][data-morph-axis="horizontal"]::after {
+    opacity: 0.88;
+    transform: translate3d(-16%, 0, 0) scale3d(0.76, 0.68, 1);
+  }
+
+  [data-morphing="true"][data-morph-axis="vertical"]::before {
+    transform: scale3d(0.94, 1.08, 1);
+  }
+
+  [data-morphing="true"][data-morph-axis="vertical"]::after {
+    opacity: 0.88;
+    transform: translate3d(0, -14%, 0) scale3d(0.68, 0.76, 1);
+  }
+}
+
+/* ============================================================================
+   Mobile GPU Stability Profile (Full Chromatic Hyper-Liquid aesthetic at 60fps)
+   - Tunes top-level blur to 18px saturate(190%) contrast(106%) on touch GPUs
+   - Disables SVG edge displacement & continuous Aurora idle animations
+   ============================================================================ */
+@media (max-width: 767px), (pointer: coarse) {
+  .surface-card,
+  .glass-card,
+  .surface-card-interactive,
+  .exam-reading-surface,
+  .glass-dark,
+  .glass-modal,
+  .liquid-header {
+    backdrop-filter: blur(18px) saturate(190%) contrast(106%);
+    -webkit-backdrop-filter: blur(18px) saturate(190%) contrast(106%);
+  }
+
+  .surface-card::before,
+  .glass-card::before,
+  .exam-reading-surface::before,
+  .glass-modal::before {
+    filter: none;
   }
 }
 
@@ -484,6 +821,7 @@
 }
 
 .kbd-hint {
+  contain: layout style;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -499,12 +837,26 @@
 }
 
 /* ============================================================================
-   GPU Spring Transitions (Pages, Portals, Tabs, Modals, Exam Questions)
+   GPU Compositor-Only 3D Spatial Depth Zoom & Liquid Water Ripple Keyframes
    ============================================================================ */
+@keyframes liquidWaterRipple {
+  0% {
+    opacity: 0.74;
+    transform: scale3d(0.08, 0.08, 1);
+  }
+  55% {
+    opacity: 0.42;
+  }
+  100% {
+    opacity: 0;
+    transform: scale3d(1, 1, 1);
+  }
+}
+
 @keyframes panelFadeIn {
   from {
     opacity: 0;
-    transform: translate3d(0, 10px, 0) scale(0.992);
+    transform: perspective(1200px) translate3d(0, 14px, -28px) scale3d(0.96, 0.96, 1);
   }
   to {
     opacity: 1;
@@ -515,7 +867,7 @@
 @keyframes modalSpringIn {
   from {
     opacity: 0;
-    transform: translate3d(0, 12px, 0) scale(0.95);
+    transform: perspective(1200px) translate3d(0, 18px, -42px) scale3d(0.92, 0.92, 1);
   }
   to {
     opacity: 1;
@@ -526,7 +878,7 @@
 @keyframes portalSlideFadeIn {
   from {
     opacity: 0;
-    transform: translate3d(0, 14px, 0) scale(0.992);
+    transform: perspective(1200px) translate3d(0, 16px, -36px) scale3d(0.95, 0.95, 1);
   }
   to {
     opacity: 1;
@@ -537,7 +889,7 @@
 @keyframes tabSlideForward {
   from {
     opacity: 0;
-    transform: translate3d(24px, 0, 0);
+    transform: perspective(1200px) translate3d(24px, 0, -32px) scale3d(0.955, 0.955, 1);
   }
   to {
     opacity: 1;
@@ -548,7 +900,7 @@
 @keyframes tabSlideBackward {
   from {
     opacity: 0;
-    transform: translate3d(-24px, 0, 0);
+    transform: perspective(1200px) translate3d(-24px, 0, -32px) scale3d(0.955, 0.955, 1);
   }
   to {
     opacity: 1;
@@ -557,31 +909,50 @@
 }
 
 .panel-enter {
-  animation: panelFadeIn 320ms var(--ease-ios) backwards;
+  will-change: auto;
+  animation: panelFadeIn 420ms var(--ease-ios-elastic) backwards;
 }
 
 .portal-transition-enter {
-  animation: portalSlideFadeIn 360ms var(--ease-ios) backwards;
+  contain: style;
+  will-change: auto;
+  animation: portalSlideFadeIn 450ms var(--ease-ios-elastic) backwards;
 }
 
 .tab-slide-forward {
-  animation: tabSlideForward 340ms var(--ease-ios) backwards;
+  contain: style;
+  will-change: auto;
+  animation: tabSlideForward 420ms var(--ease-ios-elastic) backwards;
 }
 
 .tab-slide-backward {
-  animation: tabSlideBackward 340ms var(--ease-ios) backwards;
+  contain: style;
+  will-change: auto;
+  animation: tabSlideBackward 420ms var(--ease-ios-elastic) backwards;
 }
 
 .tab-slide-up {
-  animation: panelFadeIn 320ms var(--ease-ios) backwards;
+  contain: style;
+  will-change: auto;
+  animation: panelFadeIn 400ms var(--ease-ios-elastic) backwards;
 }
 
 .question-slide-next {
-  animation: tabSlideForward 300ms var(--ease-ios) backwards;
+  contain: style;
+  will-change: auto;
+  animation: tabSlideForward 380ms var(--ease-ios-elastic) backwards;
 }
 
 .question-slide-prev {
-  animation: tabSlideBackward 300ms var(--ease-ios) backwards;
+  contain: style;
+  will-change: auto;
+  animation: tabSlideBackward 380ms var(--ease-ios-elastic) backwards;
+}
+
+/* Promote compositor layer ONLY during active keyframe execution,
+   clearing back to `auto` on animationend via useActiveMotionFlag. */
+[data-motion-active="true"] {
+  will-change: transform, opacity;
 }
 
 /* Expressive Virtual Pet Keyframes (Compositor-only transform/opacity) */
@@ -770,8 +1141,9 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ios-mesh-backdrop::before,
-  .ios-mesh-backdrop::after {
+  .aurora-blob,
+  .aurora-cursor-orb,
+  .liquid-ripple-wave {
     animation: none;
   }
   .surface-card,
@@ -781,7 +1153,12 @@
   .btn-press,
   .liquid-morph-pill,
   .liquid-morph-pill-accent,
-  .liquid-morph-ring {
+  .liquid-morph-ring,
+  .liquid-morph-pill::before,
+  .liquid-morph-pill-accent::before,
+  .liquid-morph-ring::before,
+  .liquid-morph-pill::after,
+  .liquid-morph-pill-accent::after {
     transition: none !important;
   }
   .surface-card-interactive:hover,
@@ -817,6 +1194,11 @@
   .pet-zzz-2 {
     animation: none;
   }
+  *,
+  *::before,
+  *::after {
+    will-change: auto !important;
+  }
 }
 
 /* Hide scrollbar cleanly on horizontal touch tab strips */
@@ -830,6 +1212,7 @@
 
 /* Rich HTML table preservation for Word/Docx imported questions */
 .rich-question-content {
+  contain: layout style;
   overflow-wrap: anywhere;
   max-width: 100%;
   color: #090d16;

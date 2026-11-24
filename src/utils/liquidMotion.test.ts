@@ -2,7 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   clampRelativeSpecularCoords,
+  computeMagneticPull,
   computeMorphIndicatorRect,
+  computeMorphStretchMetrics,
+  computeRippleMetrics,
+  resolveActiveMotionLayerState,
+  resolveMorphActiveDurationMs,
   resolveQuestionSlideDirection,
   resolveTabSlideDirection,
 } from './liquidMotion';
@@ -57,4 +62,69 @@ test('computeMorphIndicatorRect offsets coordinates cleanly with container scrol
     width: 120,
     height: 38,
   });
+});
+
+test('computeMorphStretchMetrics detects horizontal, vertical, and stationary droplet moves', () => {
+  const horiz = computeMorphStretchMetrics({ x: 10, y: 4 }, { x: 140, y: 4 });
+  assert.equal(horiz.axis, 'horizontal');
+  assert.equal(horiz.dx, 130);
+
+  const vert = computeMorphStretchMetrics({ x: 8, y: 12 }, { x: 8, y: 112 });
+  assert.equal(vert.axis, 'vertical');
+  assert.equal(vert.dy, 100);
+
+  const still = computeMorphStretchMetrics({ x: 8, y: 12 }, { x: 8.5, y: 12.5 });
+  assert.equal(still.axis, 'none');
+});
+
+test('resolveActiveMotionLayerState promotes GPU layers only while active and respects reduced motion', () => {
+  assert.equal(resolveActiveMotionLayerState({}), 'auto');
+  assert.equal(
+    resolveActiveMotionLayerState({ isAnimating: false, isMorphing: false, isDragging: false }),
+    'auto'
+  );
+  assert.equal(
+    resolveActiveMotionLayerState({ isAnimating: true, properties: 'transform, opacity' }),
+    'transform, opacity'
+  );
+  assert.equal(resolveActiveMotionLayerState({ isMorphing: true }), 'transform');
+  assert.equal(resolveActiveMotionLayerState({ isDragging: true }), 'transform');
+  assert.equal(
+    resolveActiveMotionLayerState({
+      isAnimating: true,
+      isMorphing: true,
+      reducedMotion: true,
+    }),
+    'auto'
+  );
+});
+
+test('resolveMorphActiveDurationMs returns positive release window only when moving or resizing', () => {
+  assert.equal(resolveMorphActiveDurationMs(false), 0);
+  assert.equal(resolveMorphActiveDurationMs(true), 420);
+  assert.equal(resolveMorphActiveDurationMs(true, 380.4), 380);
+});
+
+test('computeMagneticPull bounds displacement around center cleanly', () => {
+  const rect = { left: 100, top: 100, width: 200, height: 100 };
+  assert.deepEqual(computeMagneticPull(200, 150, rect, 4), { tx: 0, ty: 0 });
+  assert.deepEqual(computeMagneticPull(400, 300, rect, 4), { tx: 4, ty: 4 });
+  assert.deepEqual(computeMagneticPull(0, 0, rect, 4), { tx: -4, ty: -4 });
+  assert.deepEqual(computeMagneticPull(150, 125, { left: 0, top: 0, width: 0, height: 50 }), {
+    tx: 0,
+    ty: 0,
+  });
+});
+
+test('computeRippleMetrics sizes expanding ripple to reach farthest corner of target box', () => {
+  const rect = { left: 10, top: 20, width: 100, height: 40 };
+  const centerRipple = computeRippleMetrics(60, 40, rect);
+  assert.equal(centerRipple.localX, 50);
+  assert.equal(centerRipple.localY, 20);
+  assert.ok(centerRipple.diameter >= Math.ceil(Math.hypot(50, 20) * 2));
+
+  const edgeRipple = computeRippleMetrics(10, 20, rect);
+  assert.equal(edgeRipple.localX, 0);
+  assert.equal(edgeRipple.localY, 0);
+  assert.ok(edgeRipple.diameter >= Math.ceil(Math.hypot(100, 40) * 2));
 });
