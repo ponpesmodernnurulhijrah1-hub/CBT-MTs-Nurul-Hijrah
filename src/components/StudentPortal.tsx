@@ -58,6 +58,7 @@ import {
   recordStudentViolation,
 } from '../utils/violationTracker';
 import { useStudentWebRTCPublisher } from '../hooks/useWebRTCProctor';
+import { useLiquidMorphPill, useQuestionSlideDirection } from '../hooks/useLiquidMotion';
 
 interface StudentPortalProps {
   classes: ClassItem[];
@@ -155,6 +156,37 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
   const wasFullscreenRef = useRef(false);
   const violationHistoryRef = useRef<ViolationLogEntry[]>([]);
   const timerToastTimerRef = useRef<number | null>(null);
+  const filterNavRef = useRef<HTMLDivElement | null>(null);
+  const questionGridRef = useRef<HTMLDivElement | null>(null);
+  const questionSlideDirection = useQuestionSlideDirection(currentIdx);
+  const questionSlideClass =
+    questionSlideDirection === 'forward'
+      ? 'question-slide-next'
+      : questionSlideDirection === 'backward'
+        ? 'question-slide-prev'
+        : 'panel-enter';
+  const filterMorph = useLiquidMorphPill(
+    filterNavRef,
+    stage === 'exam' ? navFilter : null,
+    `${examQuestions.length}-${navFilter}`
+  );
+  const isCurrentInFilteredGrid =
+    stage === 'exam' &&
+    examQuestions[currentIdx] !== undefined &&
+    (() => {
+      const cq = examQuestions[currentIdx];
+      if (!cq) return false;
+      const isAns = (answersMap[cq.id]?.length || 0) > 0;
+      const isDoubt = Boolean(doubtfulMap[cq.id]);
+      if (navFilter === 'UNANSWERED') return !isAns;
+      if (navFilter === 'DOUBTFUL') return isDoubt;
+      return true;
+    })();
+  const questionGridMorph = useLiquidMorphPill(
+    questionGridRef,
+    isCurrentInFilteredGrid ? currentIdx : null,
+    `${examQuestions.length}-${navFilter}`
+  );
 
   useEffect(() => {
     registerAlarmAudioElement(alarmAudioRef.current);
@@ -1744,16 +1776,16 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
 
         {/* Main Split Workspace (8-col Focus Question Card + 4-col Proctoring & Navigator) */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          {/* Question Card */}
-          <div className="lg:col-span-8 surface-card rounded-3xl p-5 sm:p-7 flex flex-col justify-between">
+          {/* Question Card (Denser Frosted Reading Layer for Razor-Sharp Legibility) */}
+          <div className="lg:col-span-8 exam-reading-surface rounded-3xl p-5 sm:p-7 flex flex-col justify-between">
             {currentQ && (
-              <div key={currentQ.id} className="panel-enter">
-                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/55 pb-3.5">
+              <div key={currentQ.id} className={questionSlideClass}>
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/75 pb-3.5">
                   <div className="flex items-center gap-2.5 text-xs">
-                    <span className="rounded-xl bg-slate-900/90 px-3 py-1 font-mono-tabular font-bold text-white shadow-xs">
+                    <span className="rounded-xl bg-slate-950/90 border border-white/30 px-3 py-1 font-mono-tabular font-bold text-white shadow-xs">
                       Soal {currentIdx + 1} / {examQuestions.length}
                     </span>
-                    <span className="font-semibold text-slate-700">
+                    <span className="font-semibold text-slate-800">
                       {currentQ.tipe === 'PG' && 'Pilihan Ganda'}
                       {currentQ.tipe === 'PG_KOMPLEKS' && 'Pilihan Ganda Kompleks (Pilih > 1)'}
                       {currentQ.tipe === 'BENAR_SALAH' && 'Benar / Salah'}
@@ -1796,7 +1828,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                       className={`btn-press inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold transition-colors whitespace-nowrap ${
                         doubtfulMap[currentQ.id]
                           ? 'bg-amber-500 text-white shadow-xs'
-                          : 'border border-white/65 bg-white/50 text-slate-700 hover:bg-white/80'
+                          : 'border border-white/75 bg-white/70 text-slate-800 hover:bg-white'
                       }`}
                     >
                       <Flag className="h-3.5 w-3.5" />
@@ -1806,7 +1838,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                 </div>
 
                 <div
-                  className={`rich-question-content mt-5 leading-relaxed text-slate-900 ${
+                  className={`rich-question-content mt-5 leading-relaxed text-slate-950 ${
                     fontScale === 'xlarge'
                       ? 'text-xl'
                       : fontScale === 'large'
@@ -1828,10 +1860,10 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                       return (
                         <label
                           key={oIdx}
-                          className={`group flex cursor-pointer items-start gap-3 rounded-2xl border p-3.5 text-sm transition-[transform,colors] duration-200 active:scale-[0.985] ${
+                          className={`liquid-option-card group flex cursor-pointer items-start gap-3 rounded-2xl border p-3.5 text-sm ${
                             selected
-                              ? 'border-emerald-500/70 bg-emerald-500/15 font-medium text-emerald-950 shadow-[0_10px_24px_-12px_rgba(4,120,87,0.35)]'
-                              : 'border-white/65 bg-white/45 text-slate-800 hover:-translate-y-0.5 hover:border-white/95 hover:bg-white/75 hover:shadow-sm'
+                              ? 'border-emerald-600/75 bg-emerald-50/90 font-semibold text-slate-950 shadow-[0_12px_26px_-12px_rgba(4,120,87,0.35)]'
+                              : 'border-white/85 bg-white/80 text-slate-950 hover:-translate-y-0.5 hover:border-sky-300/90 hover:bg-white/95 hover:shadow-sm'
                           }`}
                         >
                           <input
@@ -1846,13 +1878,13 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                               className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-lg font-mono-tabular text-xs font-bold transition-colors ${
                                 selected
                                   ? 'bg-emerald-700 text-white shadow-xs'
-                                  : 'bg-white/75 text-slate-700 group-hover:bg-white'
+                                  : 'bg-slate-100/90 border border-slate-200/80 text-slate-800 group-hover:bg-sky-50'
                               }`}
                             >
                               {value}
                             </span>
                           )}
-                          <span className="flex-1 pt-0.5">{optText}</span>
+                          <span className="flex-1 pt-0.5 text-slate-950">{optText}</span>
                           {selected && <Check className="h-4 w-4 text-emerald-700 shrink-0 mt-0.5" />}
                         </label>
                       );
@@ -2005,14 +2037,22 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                 </span>
               </div>
 
-              {/* Filter Tabs for Fast Jump */}
-              <div className="glass-subtle grid grid-cols-3 gap-1 rounded-xl p-1">
+              {/* Filter Tabs for Fast Jump with Liquid Morphing Pill */}
+              <div ref={filterNavRef} className="relative glass-subtle grid grid-cols-3 gap-1 rounded-xl p-1">
+                <span
+                  aria-hidden="true"
+                  style={filterMorph.pillStyle}
+                  className="liquid-morph-pill rounded-lg z-0"
+                />
                 <button
                   type="button"
+                  data-morph-active={navFilter === 'ALL' ? 'true' : undefined}
                   onClick={() => setNavFilter('ALL')}
-                  className={`btn-press rounded-lg py-1 text-[11px] font-semibold transition-colors ${
+                  className={`btn-press relative z-10 rounded-lg py-1 text-[11px] font-semibold transition-colors ${
                     navFilter === 'ALL'
-                      ? 'bg-white/85 text-slate-900 shadow-xs'
+                      ? filterMorph.visible
+                        ? 'text-slate-950'
+                        : 'bg-white/85 text-slate-900 shadow-xs'
                       : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
@@ -2020,10 +2060,13 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                 </button>
                 <button
                   type="button"
+                  data-morph-active={navFilter === 'UNANSWERED' ? 'true' : undefined}
                   onClick={() => setNavFilter('UNANSWERED')}
-                  className={`btn-press rounded-lg py-1 text-[11px] font-semibold transition-colors ${
+                  className={`btn-press relative z-10 rounded-lg py-1 text-[11px] font-semibold transition-colors ${
                     navFilter === 'UNANSWERED'
-                      ? 'bg-white/85 text-slate-900 shadow-xs'
+                      ? filterMorph.visible
+                        ? 'text-slate-950'
+                        : 'bg-white/85 text-slate-900 shadow-xs'
                       : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
@@ -2031,10 +2074,13 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                 </button>
                 <button
                   type="button"
+                  data-morph-active={navFilter === 'DOUBTFUL' ? 'true' : undefined}
                   onClick={() => setNavFilter('DOUBTFUL')}
-                  className={`btn-press rounded-lg py-1 text-[11px] font-semibold transition-colors ${
+                  className={`btn-press relative z-10 rounded-lg py-1 text-[11px] font-semibold transition-colors ${
                     navFilter === 'DOUBTFUL'
-                      ? 'bg-amber-500 text-white shadow-xs'
+                      ? filterMorph.visible
+                        ? 'text-amber-900 font-bold'
+                        : 'bg-amber-500 text-white shadow-xs'
                       : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
@@ -2047,13 +2093,18 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                   Tidak ada nomor soal pada filter ini.
                 </p>
               ) : (
-                <div className="grid grid-cols-5 gap-2">
+                <div ref={questionGridRef} className="relative grid grid-cols-5 gap-2">
+                  <span
+                    aria-hidden="true"
+                    style={questionGridMorph.pillStyle}
+                    className="liquid-morph-ring z-20"
+                  />
                   {filteredNavItems.map(({ q, idx }) => {
                     const isAnswered = (answersMap[q.id]?.length || 0) > 0;
                     const isDoubtful = Boolean(doubtfulMap[q.id]);
                     const isCurrent = idx === currentIdx;
 
-                    let cls = 'border-white/70 bg-white/50 text-slate-800 hover:bg-white/85';
+                    let cls = 'border-white/75 bg-white/55 text-slate-800 hover:bg-white/85';
                     if (isDoubtful) cls = 'border-amber-400/80 bg-amber-400/25 text-amber-950 font-bold';
                     else if (isAnswered)
                       cls = 'border-emerald-600 bg-emerald-700 text-white font-bold shadow-xs';
@@ -2062,9 +2113,10 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                       <button
                         key={q.id}
                         type="button"
+                        data-morph-active={isCurrent ? 'true' : undefined}
                         onClick={() => setCurrentIdx(idx)}
-                        className={`btn-press h-9 rounded-xl border font-mono-tabular text-xs transition-colors ${cls} ${
-                          isCurrent ? 'ring-2 ring-slate-900 ring-offset-1' : ''
+                        className={`btn-press relative z-10 h-9 rounded-xl border font-mono-tabular text-xs transition-colors ${cls} ${
+                          isCurrent && !questionGridMorph.visible ? 'ring-2 ring-slate-900 ring-offset-1' : ''
                         }`}
                       >
                         {idx + 1}

@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import { Download, QrCode, ShieldCheck, GraduationCap, BookOpenCheck, Shield } from 'lucide-react';
 import type { SyncStatusInfo, UserRole } from '../types/cbt';
 import { SyncStatusIndicator } from './SyncStatusIndicator';
+import { useLiquidMorphPill } from '../hooks/useLiquidMotion';
 
 interface TopBarProps {
   activeRole: UserRole;
@@ -30,16 +31,19 @@ export const TopBar: React.FC<TopBarProps> = ({
   syncInfo,
   onForceSync,
 }) => {
+  const navRef = useRef<HTMLElement | null>(null);
+  const { pillStyle, visible: pillVisible } = useLiquidMorphPill(navRef, activeRole);
+
   return (
-    <header className="sticky top-0 z-40 border-b border-white/50 bg-white/45 backdrop-blur-xl shadow-[0_8px_24px_-14px_rgba(15,23,42,0.12)] no-print">
+    <header className="sticky top-0 z-40 liquid-header no-print">
       <div className="mx-auto flex max-w-7xl flex-wrap md:flex-nowrap items-center justify-between gap-2 md:gap-2.5 lg:gap-6 px-3.5 sm:px-5 lg:px-6 py-2 sm:py-2.5">
         {/* Zone 1: Single-line Brand Wordmark */}
         <button
           type="button"
           onClick={() => !isExamLocked && onSelectRole('siswa')}
-          className="btn-press flex min-h-[38px] items-center gap-2 text-left whitespace-nowrap shrink-0 rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700"
+          className="btn-press flex min-h-[38px] items-center gap-2 text-left whitespace-nowrap shrink-0 rounded-xl px-1.5 py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700"
         >
-          <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-slate-900/90 border border-white/20 text-emerald-400 shadow-xs">
+          <span className="flex h-8 w-8 items-center justify-center rounded-xl bg-slate-900/90 border border-white/30 text-emerald-400 shadow-xs">
             <ShieldCheck className="h-4 w-4" />
           </span>
           <span className="font-display text-sm sm:text-base lg:text-lg font-bold tracking-tight text-slate-900">
@@ -62,7 +66,7 @@ export const TopBar: React.FC<TopBarProps> = ({
               onClick={onDirectInstall}
               data-testid="topbar-direct-install-btn"
               aria-label="Instal Aplikasi ke Perangkat"
-              className="btn-press min-h-[40px] inline-flex items-center gap-1.5 lg:gap-2 rounded-xl bg-emerald-700 border border-emerald-500/50 px-3 lg:px-4 py-1.5 text-xs lg:text-sm font-bold text-white shadow-[0_6px_18px_-6px_rgba(4,120,87,0.65)] hover:bg-emerald-800 whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700"
+              className="btn-press min-h-[40px] inline-flex items-center gap-1.5 lg:gap-2 rounded-xl bg-emerald-700/95 border border-emerald-400/50 px-3 lg:px-4 py-1.5 text-xs lg:text-sm font-bold text-white shadow-[0_8px_22px_-6px_rgba(4,120,87,0.62)] hover:bg-emerald-800 whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700"
             >
               <Download className="h-4 w-4 shrink-0" />
               <span>Instal Aplikasi</span>
@@ -75,8 +79,8 @@ export const TopBar: React.FC<TopBarProps> = ({
             aria-label="Buka Panduan Instal & Kode QR"
             className={`btn-press min-h-[40px] inline-flex items-center gap-1.5 lg:gap-2 rounded-xl px-2.5 lg:px-3.5 py-1.5 text-xs lg:text-sm font-semibold whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-700 ${
               canDirectInstall
-                ? 'border border-white/75 bg-white/75 text-slate-800 hover:bg-white'
-                : 'bg-emerald-700/95 border border-emerald-500/40 text-white hover:bg-emerald-800'
+                ? 'glass-subtle border-white/80 text-slate-800 hover:bg-white/90'
+                : 'bg-emerald-700/95 border border-emerald-400/45 text-white shadow-[0_8px_20px_-8px_rgba(4,120,87,0.55)] hover:bg-emerald-800'
             }`}
           >
             <QrCode className="h-4 w-4 shrink-0" />
@@ -91,11 +95,17 @@ export const TopBar: React.FC<TopBarProps> = ({
           </button>
         </div>
 
-        {/* Zone 2: Frosted Segmented Portal Switcher */}
+        {/* Zone 2: iOS Liquid Glass Morphing Pill Portal Switcher */}
         <nav
+          ref={navRef}
           aria-label="Navigasi Portal"
-          className="w-full md:w-auto md:order-2 grid grid-cols-3 md:flex items-center gap-1 rounded-2xl border border-white/60 bg-white/35 backdrop-blur-md p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.65)] shrink-0"
+          className="relative w-full md:w-auto md:order-2 grid grid-cols-3 md:flex items-center gap-1 rounded-2xl border border-white/55 border-t-white/85 border-l-white/75 bg-white/35 backdrop-blur-2xl backdrop-saturate-[180%] p-1 shadow-[inset_0_1px_1px_rgba(255,255,255,0.82),0_10px_24px_-14px_rgba(30,58,138,0.2)] shrink-0"
         >
+          <span
+            aria-hidden="true"
+            style={pillStyle}
+            className="liquid-morph-pill rounded-xl z-0"
+          />
           {PORTAL_NAV.map((item) => {
             const isActive = activeRole === item.id;
             return (
@@ -103,15 +113,18 @@ export const TopBar: React.FC<TopBarProps> = ({
                 key={item.id}
                 type="button"
                 disabled={isExamLocked}
+                data-morph-active={isActive ? 'true' : undefined}
                 aria-current={isActive ? 'page' : undefined}
                 onClick={() => onSelectRole(item.id)}
-                className={`btn-press relative min-h-[36px] sm:min-h-[38px] inline-flex items-center justify-center gap-1.5 lg:gap-2 rounded-xl px-2.5 lg:px-3.5 py-1.5 text-xs lg:text-sm font-semibold whitespace-nowrap shrink-0 transition-colors ${
+                className={`btn-press relative z-10 min-h-[36px] sm:min-h-[38px] inline-flex items-center justify-center gap-1.5 lg:gap-2 rounded-xl px-2.5 lg:px-3.5 py-1.5 text-xs lg:text-sm font-semibold whitespace-nowrap shrink-0 transition-colors duration-200 ${
                   isActive
-                    ? 'bg-white/85 text-slate-900 shadow-sm border border-white/80'
-                    : 'text-slate-700 hover:text-slate-900 hover:bg-white/45 border border-transparent'
+                    ? pillVisible
+                      ? 'text-slate-950'
+                      : 'bg-white/90 text-slate-950 shadow-sm border border-white/85'
+                    : 'text-slate-700 hover:text-slate-950 hover:bg-white/35 border border-transparent'
                 } ${isExamLocked ? 'opacity-50 cursor-not-allowed' : ''}`}
               >
-                <span className={isActive ? 'text-emerald-700' : 'text-slate-500'}>
+                <span className={isActive ? 'text-emerald-700' : 'text-slate-600'}>
                   {item.icon}
                 </span>
                 <span className="hidden lg:inline">{item.label}</span>

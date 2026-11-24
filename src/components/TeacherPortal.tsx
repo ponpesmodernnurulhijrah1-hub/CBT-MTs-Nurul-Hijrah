@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useEffect, useState } from 'react';
+import React, { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import {
   BarChart3,
   BookOpen,
@@ -35,7 +35,17 @@ import type {
 import { SyncStatusIndicator } from './SyncStatusIndicator';
 import { exportExamResultsToExcel } from '../utils/exportHelpers';
 import { getTeacherSubjects } from '../utils/storeSyncUtils';
+import { useLiquidMorphPill, useTabSlideDirection } from '../hooks/useLiquidMotion';
 import type { TeacherTab } from './TeacherTutorAssistant';
+
+const TEACHER_TAB_ORDER: readonly TeacherTab[] = [
+  'analitik',
+  'bank-soal',
+  'import',
+  'jadwal',
+  'monitoring',
+  'hasil',
+];
 
 const BankSoalPanel = lazy(() =>
   import('./BankSoalPanel').then((m) => ({ default: m.BankSoalPanel }))
@@ -143,6 +153,18 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
   const [createQuestionSignal, setCreateQuestionSignal] = useState(0);
   const [exportStatusMsg, setExportStatusMsg] = useState<string | null>(null);
   const [selectedTeacherSubject, setSelectedTeacherSubject] = useState('');
+  const mobNavRef = useRef<HTMLElement | null>(null);
+  const deskNavRef = useRef<HTMLElement | null>(null);
+  const tabSlideDirection = useTabSlideDirection(TEACHER_TAB_ORDER, activeTab);
+  const tabSlideClass =
+    tabSlideDirection === 'forward'
+      ? 'tab-slide-forward'
+      : tabSlideDirection === 'backward'
+        ? 'tab-slide-backward'
+        : 'tab-slide-up';
+  const navMorphSignature = `${loggedTeacher?.id ?? 'out'}-${selectedTeacherSubject}-${questions.length}-${exams.length}-${liveStreams.length}-${results.length}`;
+  const mobMorph = useLiquidMorphPill(mobNavRef, loggedTeacher ? activeTab : null, navMorphSignature);
+  const deskMorph = useLiquidMorphPill(deskNavRef, loggedTeacher ? activeTab : null, navMorphSignature);
 
   useEffect(() => {
     if (externalCreateQuestionSignal && externalCreateQuestionSignal > 0) {
@@ -427,23 +449,32 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
 
         {/* Mobile & Tablet Horizontal Scrollable Tab Strip (< lg) */}
         <nav
+          ref={mobNavRef}
           aria-label="Menu Portal Guru Mobile"
-          className="lg:hidden flex items-center gap-2 overflow-x-auto no-scrollbar pb-1"
+          className="relative lg:hidden flex items-center gap-1.5 overflow-x-auto no-scrollbar rounded-2xl border border-white/55 border-t-white/85 border-l-white/75 bg-white/35 backdrop-blur-2xl backdrop-saturate-[180%] p-1.5 shadow-[inset_0_1px_1px_rgba(255,255,255,0.82),0_10px_24px_-14px_rgba(30,58,138,0.16)]"
         >
+          <span
+            aria-hidden="true"
+            style={mobMorph.pillStyle}
+            className="liquid-morph-pill-accent rounded-xl z-0"
+          />
           {navItems.map((item) => {
             const isActive = activeTab === item.id;
             return (
               <button
                 key={`mob-${item.id}`}
                 type="button"
+                data-morph-active={isActive ? 'true' : undefined}
                 onClick={() => {
                   if (item.id === 'hasil') setResultsPresetStatus('ALL');
                   setActiveTab(item.id);
                 }}
-                className={`btn-press min-h-[42px] inline-flex items-center gap-2 rounded-2xl border px-3.5 py-2 text-xs font-semibold whitespace-nowrap shrink-0 transition-colors ${
+                className={`btn-press relative z-10 min-h-[42px] inline-flex items-center gap-2 rounded-xl border px-3.5 py-2 text-xs font-semibold whitespace-nowrap shrink-0 transition-colors duration-200 ${
                   isActive
-                    ? 'border-emerald-600/50 bg-emerald-700 text-white shadow-xs'
-                    : 'border-white/70 bg-white/60 text-slate-800 hover:bg-white/85'
+                    ? mobMorph.visible
+                      ? 'border-transparent text-white'
+                      : 'border-emerald-600/50 bg-emerald-700 text-white shadow-xs'
+                    : 'border-transparent text-slate-800 hover:bg-white/45'
                 }`}
               >
                 {item.icon}
@@ -463,7 +494,16 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
         </nav>
 
         {/* Desktop Vertical Navigation Rail (>= lg) */}
-        <nav aria-label="Menu Portal Guru Desktop" className="hidden lg:block surface-card rounded-3xl p-2 space-y-1">
+        <nav
+          ref={deskNavRef}
+          aria-label="Menu Portal Guru Desktop"
+          className="relative hidden lg:block surface-card rounded-3xl p-2 space-y-1"
+        >
+          <span
+            aria-hidden="true"
+            style={deskMorph.pillStyle}
+            className="liquid-morph-pill-accent rounded-xl z-0"
+          />
           {navItems.map((item) => {
             const isWalkHighlight =
               (walkthroughStep === 0 && item.id === 'bank-soal') ||
@@ -475,14 +515,17 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
               <button
                 key={item.id}
                 type="button"
+                data-morph-active={isActive ? 'true' : undefined}
                 onClick={() => {
                   if (item.id === 'hasil') setResultsPresetStatus('ALL');
                   setActiveTab(item.id);
                 }}
-                className={`btn-press flex w-full items-center justify-between gap-2 rounded-xl px-3 py-2.5 text-xs font-semibold transition-colors ${
+                className={`btn-press relative z-10 flex w-full items-center justify-between gap-2 rounded-xl px-3 py-2.5 text-xs font-semibold transition-colors duration-200 ${
                   isActive
-                    ? 'bg-emerald-700 text-white shadow-xs'
-                    : 'text-slate-700 hover:bg-white/60 hover:text-slate-900'
+                    ? deskMorph.visible
+                      ? 'text-white'
+                      : 'bg-emerald-700 text-white shadow-xs'
+                    : 'text-slate-700 hover:bg-white/45 hover:text-slate-950'
                 } ${isWalkHighlight ? 'ring-2 ring-amber-400 ring-offset-1' : ''}`}
               >
                 <span className="flex items-center gap-2.5 min-w-0">
@@ -603,7 +646,7 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
         )}
 
         {activeTab === 'analitik' && (
-          <div className="space-y-6 panel-enter">
+          <div key="analitik" className={`space-y-6 ${tabSlideClass}`} data-teacher-tab-panel="analitik">
             {/* Indikator Status Ujian Frosted Glass Strip */}
             <div className="surface-card rounded-3xl p-4 sm:p-5 flex flex-wrap items-center justify-between gap-4">
               <div className="flex items-start sm:items-center gap-3.5 min-w-0">
@@ -865,79 +908,89 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
         )}
 
         {activeTab === 'bank-soal' && (
-          <Suspense fallback={<TabLoading />}>
-            <BankSoalPanel
-              questions={questions}
-              subjects={subjectNames}
-              selectedSubject={teacherSubject}
-              onChangeSubject={() => {}}
-              lockedSubject={teacherSubject}
-              teacherName={loggedTeacher.nama}
-              onAddQuestion={onAddQuestion}
-              onUpdateQuestion={onUpdateQuestion}
-              onDeleteQuestion={onDeleteQuestion}
-              onDeleteQuestionsBatch={onDeleteQuestionsBatch}
-              onClearSubjectBank={onClearBankBySubject}
-              onOpenVideoTutorial={() => setVideoModalOpen(true)}
-              openCreateSignal={createQuestionSignal}
-            />
-          </Suspense>
+          <div key="bank-soal" className={tabSlideClass} data-teacher-tab-panel="bank-soal">
+            <Suspense fallback={<TabLoading />}>
+              <BankSoalPanel
+                questions={questions}
+                subjects={subjectNames}
+                selectedSubject={teacherSubject}
+                onChangeSubject={() => {}}
+                lockedSubject={teacherSubject}
+                teacherName={loggedTeacher.nama}
+                onAddQuestion={onAddQuestion}
+                onUpdateQuestion={onUpdateQuestion}
+                onDeleteQuestion={onDeleteQuestion}
+                onDeleteQuestionsBatch={onDeleteQuestionsBatch}
+                onClearSubjectBank={onClearBankBySubject}
+                onOpenVideoTutorial={() => setVideoModalOpen(true)}
+                openCreateSignal={createQuestionSignal}
+              />
+            </Suspense>
+          </div>
         )}
 
         {activeTab === 'import' && (
-          <Suspense fallback={<TabLoading />}>
-            <SmartImportPanel
-              subjects={subjectNames}
-              selectedSubject={teacherSubject}
-              onChangeSubject={() => {}}
-              lockedSubject={teacherSubject}
-              teacherName={loggedTeacher.nama}
-              onSaveImportedQuestions={onAddQuestionsBatch}
-              onSuccessRedirect={() => setActiveTab('bank-soal')}
-            />
-          </Suspense>
+          <div key="import" className={tabSlideClass} data-teacher-tab-panel="import">
+            <Suspense fallback={<TabLoading />}>
+              <SmartImportPanel
+                subjects={subjectNames}
+                selectedSubject={teacherSubject}
+                onChangeSubject={() => {}}
+                lockedSubject={teacherSubject}
+                teacherName={loggedTeacher.nama}
+                onSaveImportedQuestions={onAddQuestionsBatch}
+                onSuccessRedirect={() => setActiveTab('bank-soal')}
+              />
+            </Suspense>
+          </div>
         )}
 
         {activeTab === 'jadwal' && (
-          <Suspense fallback={<TabLoading />}>
-            <JadwalTesPanel
-              exams={exams}
-              questions={questions}
-              subjects={subjectNames}
-              classes={classNames}
-              lockedSubject={teacherSubject}
-              teacherName={loggedTeacher.nama}
-              onSaveExam={onSaveExam}
-              onToggleExamActive={onToggleExamActive}
-              onDeleteExam={onDeleteExam}
-            />
-          </Suspense>
+          <div key="jadwal" className={tabSlideClass} data-teacher-tab-panel="jadwal">
+            <Suspense fallback={<TabLoading />}>
+              <JadwalTesPanel
+                exams={exams}
+                questions={questions}
+                subjects={subjectNames}
+                classes={classNames}
+                lockedSubject={teacherSubject}
+                teacherName={loggedTeacher.nama}
+                onSaveExam={onSaveExam}
+                onToggleExamActive={onToggleExamActive}
+                onDeleteExam={onDeleteExam}
+              />
+            </Suspense>
+          </div>
         )}
 
         {activeTab === 'monitoring' && (
-          <Suspense fallback={<TabLoading />}>
-            <LiveMonitoringGrid
-              sessions={subjectLiveStreams}
-              onSendWarning={onSendProctorWarning}
-              emptyTitle={`Belum ada siswa yang sedang ujian mata pelajaran ${teacherSubject}.`}
-            />
-          </Suspense>
+          <div key="monitoring" className={tabSlideClass} data-teacher-tab-panel="monitoring">
+            <Suspense fallback={<TabLoading />}>
+              <LiveMonitoringGrid
+                sessions={subjectLiveStreams}
+                onSendWarning={onSendProctorWarning}
+                emptyTitle={`Belum ada siswa yang sedang ujian mata pelajaran ${teacherSubject}.`}
+              />
+            </Suspense>
+          </div>
         )}
 
         {activeTab === 'hasil' && (
-          <Suspense fallback={<TabLoading />}>
-            <ResultsPanel
-              key={resultsPresetStatus}
-              results={subjectResults}
-              exams={exams}
-              subjects={subjectNames}
-              classes={classNames}
-              lockedSubject={teacherSubject}
-              initialStatusFilter={resultsPresetStatus}
-              onUpdateEssayScore={onUpdateEssayScore}
-              onOpenGoogleSheets={onOpenGoogleSheets}
-            />
-          </Suspense>
+          <div key="hasil" className={tabSlideClass} data-teacher-tab-panel="hasil">
+            <Suspense fallback={<TabLoading />}>
+              <ResultsPanel
+                key={resultsPresetStatus}
+                results={subjectResults}
+                exams={exams}
+                subjects={subjectNames}
+                classes={classNames}
+                lockedSubject={teacherSubject}
+                initialStatusFilter={resultsPresetStatus}
+                onUpdateEssayScore={onUpdateEssayScore}
+                onOpenGoogleSheets={onOpenGoogleSheets}
+              />
+            </Suspense>
+          </div>
         )}
       </section>
 

@@ -2,8 +2,8 @@
 
 @layer base {
   :root {
-    --font-display: 'Outfit', 'Plus Jakarta Sans', 'Inter', system-ui, sans-serif;
-    --font-sans: 'Inter', 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    --font-display: 'Outfit', 'Plus Jakarta Sans', system-ui, sans-serif;
+    --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
     --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
     --ease-ios: cubic-bezier(0.22, 1, 0.36, 1);
   }
@@ -20,8 +20,8 @@
     width: 100%;
     max-width: 100%;
     font-family: var(--font-sans);
-    background-color: #eef4f8;
-    color: #0f172a;
+    background-color: #ecf3ff;
+    color: #090d16;
     overflow-x: clip;
     padding-left: env(safe-area-inset-left, 0px);
     padding-right: env(safe-area-inset-right, 0px);
@@ -37,157 +37,450 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* GPU-composited pastel mesh backdrop (avoids mobile background-attachment: fixed repaint jank) */
+/* ============================================================================
+   iOS 26 / visionOS Animated Sky-Blue, Pastel-Indigo & Pearl-White Mesh
+   ============================================================================ */
 .ios-mesh-bg {
   position: relative;
-  background-color: #ecf3f8;
+  background-color: #eef4ff;
 }
 
 .ios-mesh-backdrop {
-  background-color: #ecf3f8;
-  background-image:
-    radial-gradient(46rem 46rem at 8% 12%, rgba(167, 243, 208, 0.65) 0%, transparent 65%),
-    radial-gradient(50rem 50rem at 88% 8%, rgba(186, 230, 253, 0.7) 0%, transparent 65%),
-    radial-gradient(46rem 46rem at 78% 72%, rgba(221, 214, 254, 0.56) 0%, transparent 65%),
-    radial-gradient(44rem 44rem at 14% 82%, rgba(209, 250, 229, 0.58) 0%, transparent 65%),
-    linear-gradient(160deg, #f0f7fb 0%, #e8f1f8 52%, #edf2fb 100%);
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(56rem 56rem at 12% 10%, rgba(125, 211, 252, 0.56) 0%, transparent 64%),
+    radial-gradient(54rem 54rem at 88% 12%, rgba(165, 180, 252, 0.54) 0%, transparent 64%),
+    radial-gradient(50rem 50rem at 76% 82%, rgba(186, 230, 253, 0.62) 0%, transparent 66%),
+    radial-gradient(48rem 48rem at 16% 84%, rgba(199, 210, 254, 0.5) 0%, transparent 65%),
+    linear-gradient(155deg, #f8fbff 0%, #eaf2ff 48%, #f3f5ff 100%);
 }
 
-/* Primary iOS Frosted Glass Card (16px-24px Radius, GPU-friendly blur) */
-.surface-card,
-.glass-card {
-  background: linear-gradient(
-    140deg,
-    rgba(255, 255, 255, 0.52) 0%,
-    rgba(255, 255, 255, 0.3) 100%
+.ios-mesh-backdrop::before,
+.ios-mesh-backdrop::after {
+  content: "";
+  position: absolute;
+  border-radius: 9999px;
+  pointer-events: none;
+  will-change: transform;
+}
+
+.ios-mesh-backdrop::before {
+  width: 66vmax;
+  height: 66vmax;
+  top: -18vmax;
+  left: -12vmax;
+  background: radial-gradient(
+    circle at 42% 45%,
+    rgba(125, 211, 252, 0.52) 0%,
+    rgba(165, 180, 252, 0.3) 42%,
+    transparent 72%
   );
-  backdrop-filter: blur(14px) saturate(160%);
-  -webkit-backdrop-filter: blur(14px) saturate(160%);
-  border: 1px solid rgba(255, 255, 255, 0.52);
-  border-radius: 20px;
-  box-shadow:
-    0 12px 30px -14px rgba(15, 23, 42, 0.1),
-    0 2px 8px -2px rgba(15, 23, 42, 0.04),
-    inset 0 1px 0 rgba(255, 255, 255, 0.72);
-  transition: transform 220ms var(--ease-ios), opacity 180ms ease;
+  animation: meshOrbFloatA 26s ease-in-out infinite alternate;
 }
 
-.surface-card-interactive {
-  background: linear-gradient(
-    140deg,
-    rgba(255, 255, 255, 0.54) 0%,
-    rgba(255, 255, 255, 0.3) 100%
+.ios-mesh-backdrop::after {
+  width: 62vmax;
+  height: 62vmax;
+  right: -16vmax;
+  bottom: -20vmax;
+  background: radial-gradient(
+    circle at 55% 52%,
+    rgba(165, 180, 252, 0.48) 0%,
+    rgba(186, 230, 253, 0.36) 44%,
+    transparent 74%
   );
-  backdrop-filter: blur(14px) saturate(160%);
-  -webkit-backdrop-filter: blur(14px) saturate(160%);
-  border: 1px solid rgba(255, 255, 255, 0.52);
-  border-radius: 20px;
-  box-shadow:
-    0 10px 26px -14px rgba(15, 23, 42, 0.1),
-    inset 0 1px 0 rgba(255, 255, 255, 0.75);
-  transition: transform 220ms var(--ease-ios), opacity 180ms ease, border-color 180ms ease;
+  animation: meshOrbFloatB 32s ease-in-out infinite alternate;
 }
 
-.surface-card-interactive:hover {
-  transform: translate3d(0, -2px, 0);
-  border-color: rgba(255, 255, 255, 0.9);
+@keyframes meshOrbFloatA {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(6vw, 4vh, 0) scale(1.06);
+  }
+  100% {
+    transform: translate3d(-3vw, 8vh, 0) scale(0.98);
+  }
 }
 
-button.surface-card-interactive:active:not(:disabled) {
-  transform: scale3d(0.97, 0.97, 1);
+@keyframes meshOrbFloatB {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(-5vw, -6vh, 0) scale(1.08);
+  }
+  100% {
+    transform: translate3d(4vw, -3vh, 0) scale(0.97);
+  }
 }
 
-/* Lighter nested frosted pane (avoids redundant double backdrop-blur cost inside glass cards) */
-.glass-subtle {
-  background: rgba(255, 255, 255, 0.42);
-  border: 1px solid rgba(255, 255, 255, 0.52);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6);
-}
+/* ============================================================================
+   iOS 26 / visionOS Liquid Glass Surfaces (Layered in @layer components so
+   Tailwind utilities like fixed/absolute/rounded/bg-* compose cleanly)
+   ============================================================================ */
+@layer components {
+  .surface-card,
+  .glass-card {
+    background: linear-gradient(
+      145deg,
+      rgba(255, 255, 255, 0.56) 0%,
+      rgba(241, 247, 255, 0.34) 52%,
+      rgba(255, 255, 255, 0.24) 100%
+    );
+    backdrop-filter: blur(24px) saturate(180%);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.36);
+    border-top-color: rgba(255, 255, 255, 0.72);
+    border-left-color: rgba(255, 255, 255, 0.56);
+    border-radius: 22px;
+    box-shadow:
+      0 20px 44px -20px rgba(30, 58, 138, 0.16),
+      0 4px 14px -4px rgba(15, 23, 42, 0.06),
+      inset 0 1px 1px rgba(255, 255, 255, 0.85),
+      inset 1px 0 1px rgba(255, 255, 255, 0.48),
+      inset 0 -10px 22px -18px rgba(147, 197, 253, 0.24);
+    transition: transform 280ms var(--ease-ios), opacity 220ms ease, border-color 220ms ease;
+  }
 
-/* iOS Dark Frosted Glass Panel (Sidebar / Dark Command Hero) */
-.glass-dark {
-  background: linear-gradient(
-    150deg,
-    rgba(15, 23, 42, 0.84) 0%,
-    rgba(24, 34, 54, 0.76) 100%
-  );
-  backdrop-filter: blur(16px) saturate(150%);
-  -webkit-backdrop-filter: blur(16px) saturate(150%);
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  box-shadow:
-    0 18px 36px -16px rgba(15, 23, 42, 0.42),
-    inset 0 1px 0 rgba(255, 255, 255, 0.18);
-}
+  .surface-card-interactive {
+    position: relative;
+    background: linear-gradient(
+      145deg,
+      rgba(255, 255, 255, 0.6) 0%,
+      rgba(239, 246, 255, 0.36) 55%,
+      rgba(255, 255, 255, 0.25) 100%
+    );
+    backdrop-filter: blur(24px) saturate(180%);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.38);
+    border-top-color: rgba(255, 255, 255, 0.76);
+    border-left-color: rgba(255, 255, 255, 0.58);
+    border-radius: 22px;
+    box-shadow:
+      0 16px 36px -18px rgba(30, 58, 138, 0.18),
+      0 4px 12px -4px rgba(15, 23, 42, 0.06),
+      inset 0 1px 1px rgba(255, 255, 255, 0.88),
+      inset 1px 0 1px rgba(255, 255, 255, 0.5);
+    transition:
+      transform 280ms var(--ease-ios),
+      opacity 200ms ease,
+      border-color 200ms ease,
+      box-shadow 260ms var(--ease-ios);
+  }
 
-/* iOS Frosted Modal Sheet */
-.glass-modal {
-  background: linear-gradient(
-    145deg,
-    rgba(255, 255, 255, 0.9) 0%,
-    rgba(248, 250, 252, 0.84) 100%
-  );
-  backdrop-filter: blur(18px) saturate(160%);
-  -webkit-backdrop-filter: blur(18px) saturate(160%);
-  border: 1px solid rgba(255, 255, 255, 0.78);
-  border-radius: 24px;
-  box-shadow:
-    0 24px 52px -16px rgba(15, 23, 42, 0.25),
-    inset 0 1px 0 rgba(255, 255, 255, 0.9);
-  animation: modalSpringIn 240ms var(--ease-ios);
-}
+  .surface-card-interactive::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    opacity: 0;
+    background: radial-gradient(
+      200px circle at var(--lx, 50%) var(--ly, 50%),
+      rgba(255, 255, 255, 0.58) 0%,
+      rgba(186, 230, 253, 0.22) 42%,
+      transparent 75%
+    );
+    transition: opacity 220ms var(--ease-ios);
+  }
 
-/* Tactile iOS Glass Input */
-.glass-input {
-  background-color: rgba(255, 255, 255, 0.68);
-  border: 1px solid rgba(255, 255, 255, 0.75);
-  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.04);
-  transition: border-color 160ms ease, background-color 160ms ease;
-}
+  .surface-card-interactive:hover {
+    transform: translate3d(0, -2px, 0);
+    border-color: rgba(255, 255, 255, 0.88);
+    box-shadow:
+      0 22px 44px -18px rgba(37, 99, 235, 0.22),
+      0 6px 16px -4px rgba(15, 23, 42, 0.08),
+      inset 0 1px 1px rgba(255, 255, 255, 0.95),
+      inset 1px 0 1px rgba(255, 255, 255, 0.62);
+  }
 
-.glass-input:focus {
-  background-color: rgba(255, 255, 255, 0.92);
-  border-color: rgba(4, 120, 87, 0.55);
-  box-shadow:
-    0 0 0 3px rgba(4, 120, 87, 0.14),
-    inset 0 1px 2px rgba(15, 23, 42, 0.03);
-  outline: none;
+  .surface-card-interactive:hover::after,
+  .surface-card-interactive:active::after {
+    opacity: 1;
+  }
+
+  button.surface-card-interactive:active:not(:disabled) {
+    transform: scale3d(0.97, 0.97, 1);
+  }
+
+  /* Higher-contrast frosted reading glass for exam stems & answer readability */
+  .exam-reading-surface {
+    background: linear-gradient(
+      148deg,
+      rgba(255, 255, 255, 0.88) 0%,
+      rgba(248, 251, 255, 0.82) 55%,
+      rgba(255, 255, 255, 0.78) 100%
+    );
+    backdrop-filter: blur(24px) saturate(180%);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.52);
+    border-top-color: rgba(255, 255, 255, 0.92);
+    border-left-color: rgba(255, 255, 255, 0.82);
+    border-radius: 24px;
+    color: #090d16;
+    box-shadow:
+      0 22px 48px -20px rgba(30, 58, 138, 0.16),
+      0 6px 16px -6px rgba(15, 23, 42, 0.06),
+      inset 0 1px 1px rgba(255, 255, 255, 0.95),
+      inset 1px 0 1px rgba(255, 255, 255, 0.68);
+  }
+
+  /* Crisp answer option liquid glass card with specular follow & spring press */
+  .liquid-option-card {
+    position: relative;
+    backdrop-filter: blur(18px) saturate(170%);
+    -webkit-backdrop-filter: blur(18px) saturate(170%);
+    box-shadow:
+      0 8px 20px -14px rgba(30, 58, 138, 0.16),
+      inset 0 1px 0 rgba(255, 255, 255, 0.85),
+      inset 1px 0 0 rgba(255, 255, 255, 0.55);
+    transition:
+      transform 220ms var(--ease-ios),
+      border-color 200ms ease,
+      background-color 200ms ease,
+      box-shadow 220ms var(--ease-ios);
+  }
+
+  .liquid-option-card::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    opacity: 0;
+    background: radial-gradient(
+      190px circle at var(--lx, 50%) var(--ly, 50%),
+      rgba(255, 255, 255, 0.52) 0%,
+      rgba(125, 211, 252, 0.18) 42%,
+      transparent 75%
+    );
+    transition: opacity 200ms var(--ease-ios);
+  }
+
+  .liquid-option-card:hover::after,
+  .liquid-option-card:active::after {
+    opacity: 1;
+  }
+
+  .liquid-option-card:active {
+    transform: scale3d(0.97, 0.97, 1);
+  }
+
+  /* Inner translucent sub-pane */
+  .glass-subtle {
+    background: linear-gradient(
+      145deg,
+      rgba(255, 255, 255, 0.54) 0%,
+      rgba(241, 247, 255, 0.36) 100%
+    );
+    border: 1px solid rgba(255, 255, 255, 0.42);
+    border-top-color: rgba(255, 255, 255, 0.74);
+    border-left-color: rgba(255, 255, 255, 0.58);
+    box-shadow:
+      0 8px 20px -16px rgba(30, 58, 138, 0.14),
+      inset 0 1px 0 rgba(255, 255, 255, 0.75),
+      inset 1px 0 0 rgba(255, 255, 255, 0.45);
+  }
+
+  /* iOS Dark Liquid Glass Panel (Sidebar / Command Hero / Mobile Install Card) */
+  .glass-dark {
+    background: linear-gradient(
+      148deg,
+      rgba(15, 23, 42, 0.8) 0%,
+      rgba(30, 41, 82, 0.74) 55%,
+      rgba(15, 23, 42, 0.84) 100%
+    );
+    backdrop-filter: blur(24px) saturate(180%);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-top-color: rgba(255, 255, 255, 0.45);
+    border-left-color: rgba(255, 255, 255, 0.32);
+    box-shadow:
+      0 22px 44px -18px rgba(15, 23, 42, 0.45),
+      inset 0 1px 1px rgba(255, 255, 255, 0.28),
+      inset 1px 0 1px rgba(255, 255, 255, 0.16);
+  }
+
+  /* iOS Frosted Modal Sheet */
+  .glass-modal {
+    background: linear-gradient(
+      148deg,
+      rgba(255, 255, 255, 0.88) 0%,
+      rgba(241, 247, 255, 0.82) 100%
+    );
+    backdrop-filter: blur(24px) saturate(180%);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.48);
+    border-top-color: rgba(255, 255, 255, 0.92);
+    border-left-color: rgba(255, 255, 255, 0.78);
+    border-radius: 26px;
+    box-shadow:
+      0 28px 60px -18px rgba(15, 23, 42, 0.28),
+      0 8px 20px -6px rgba(30, 58, 138, 0.12),
+      inset 0 1px 1px rgba(255, 255, 255, 0.95),
+      inset 1px 0 1px rgba(255, 255, 255, 0.65);
+    animation: modalSpringIn 300ms var(--ease-ios);
+  }
+
+  /* Tactile iOS Glass Input */
+  .glass-input {
+    background-color: rgba(255, 255, 255, 0.72);
+    backdrop-filter: blur(12px) saturate(160%);
+    -webkit-backdrop-filter: blur(12px) saturate(160%);
+    border: 1px solid rgba(255, 255, 255, 0.56);
+    border-top-color: rgba(255, 255, 255, 0.88);
+    border-left-color: rgba(255, 255, 255, 0.78);
+    box-shadow:
+      inset 0 1px 2px rgba(15, 23, 42, 0.05),
+      0 2px 6px -4px rgba(30, 58, 138, 0.08);
+    transition: border-color 180ms ease, background-color 180ms ease, box-shadow 180ms ease;
+  }
+
+  .glass-input:focus {
+    background-color: rgba(255, 255, 255, 0.94);
+    border-color: rgba(37, 99, 235, 0.5);
+    box-shadow:
+      0 0 0 3px rgba(96, 165, 250, 0.22),
+      inset 0 1px 2px rgba(15, 23, 42, 0.03);
+    outline: none;
+  }
+
+  /* Tactile iOS Liquid Glass Button System:
+     ::before = specular top & left luminous bevel
+     ::after  = cursor-following radial specular shimmer */
+  .btn-press {
+    position: relative;
+    transition:
+      transform 220ms var(--ease-ios),
+      opacity 180ms ease,
+      background-color 180ms ease,
+      border-color 180ms ease,
+      box-shadow 220ms var(--ease-ios);
+  }
+
+  .btn-press::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.5),
+      inset 1px 0 0 rgba(255, 255, 255, 0.28);
+  }
+
+  .btn-press::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    opacity: 0;
+    background: radial-gradient(
+      120px circle at var(--lx, 50%) var(--ly, 50%),
+      rgba(255, 255, 255, 0.48) 0%,
+      rgba(186, 230, 253, 0.2) 44%,
+      transparent 75%
+    );
+    transition: opacity 200ms var(--ease-ios);
+  }
+
+  .btn-press:hover:not(:disabled) {
+    transform: translate3d(0, -1px, 0);
+  }
+
+  .btn-press:hover:not(:disabled)::after,
+  .btn-press:active:not(:disabled)::after {
+    opacity: 1;
+  }
+
+  .btn-press:active:not(:disabled) {
+    transform: scale3d(0.97, 0.97, 1);
+  }
+
+  /* Translucent Liquid Glass Header & Footer */
+  .liquid-header {
+    background: linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.62) 0%,
+      rgba(241, 247, 255, 0.44) 100%
+    );
+    backdrop-filter: blur(24px) saturate(180%);
+    -webkit-backdrop-filter: blur(24px) saturate(180%);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.56);
+    box-shadow:
+      0 10px 30px -16px rgba(30, 58, 138, 0.14),
+      inset 0 1px 0 rgba(255, 255, 255, 0.88);
+  }
+
+  /* Morphing Pill Droplets for Active Tabs & Question Numbers */
+  .liquid-morph-pill {
+    position: absolute;
+    top: 0;
+    left: 0;
+    pointer-events: none;
+    background: linear-gradient(
+      145deg,
+      rgba(255, 255, 255, 0.94) 0%,
+      rgba(232, 242, 255, 0.82) 100%
+    );
+    backdrop-filter: blur(18px) saturate(180%);
+    -webkit-backdrop-filter: blur(18px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.72);
+    border-top-color: rgba(255, 255, 255, 0.98);
+    border-left-color: rgba(255, 255, 255, 0.9);
+    box-shadow:
+      0 8px 20px -8px rgba(37, 99, 235, 0.24),
+      0 2px 6px -2px rgba(15, 23, 42, 0.08),
+      inset 0 1px 1px rgba(255, 255, 255, 0.98);
+    will-change: transform, width, height;
+  }
+
+  .liquid-morph-pill-accent {
+    position: absolute;
+    top: 0;
+    left: 0;
+    pointer-events: none;
+    background: linear-gradient(
+      135deg,
+      rgba(4, 120, 87, 0.94) 0%,
+      rgba(13, 148, 136, 0.9) 55%,
+      rgba(37, 99, 235, 0.86) 100%
+    );
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    border-top-color: rgba(255, 255, 255, 0.7);
+    border-left-color: rgba(255, 255, 255, 0.52);
+    box-shadow:
+      0 10px 24px -10px rgba(4, 120, 87, 0.52),
+      0 4px 12px -4px rgba(37, 99, 235, 0.22),
+      inset 0 1px 1px rgba(255, 255, 255, 0.58);
+    will-change: transform, width, height;
+  }
+
+  .liquid-morph-ring {
+    position: absolute;
+    top: 0;
+    left: 0;
+    pointer-events: none;
+    border-radius: 0.75rem;
+    border: 2px solid rgba(15, 23, 42, 0.88);
+    box-shadow:
+      0 0 0 3px rgba(125, 211, 252, 0.45),
+      0 8px 18px -6px rgba(37, 99, 235, 0.36),
+      inset 0 1px 0 rgba(255, 255, 255, 0.8);
+    will-change: transform, width, height;
+  }
 }
 
 .surface-card-interactive:focus-visible,
-.btn-press:focus-visible {
+.btn-press:focus-visible,
+.liquid-option-card:focus-visible {
   outline: 2px solid #047857;
   outline-offset: 2px;
-}
-
-/* Tactile Spring Micro-Interaction using GPU-composited transform & opacity */
-.btn-press {
-  transition:
-    transform 180ms var(--ease-ios),
-    opacity 150ms ease,
-    background-color 150ms ease,
-    border-color 150ms ease;
-}
-
-.btn-press:hover:not(:disabled) {
-  transform: translate3d(0, -1px, 0);
-}
-
-.btn-press:active:not(:disabled) {
-  transform: scale3d(0.97, 0.97, 1);
-}
-
-@media (max-width: 767px) {
-  .surface-card,
-  .glass-card,
-  .surface-card-interactive,
-  .glass-dark {
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
-  }
-  .glass-modal {
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
-  }
 }
 
 .kbd-hint {
@@ -197,7 +490,7 @@ button.surface-card-interactive:active:not(:disabled) {
   padding: 0.1rem 0.38rem;
   border-radius: 0.375rem;
   border: 1px solid rgba(203, 213, 225, 0.8);
-  background-color: rgba(255, 255, 255, 0.65);
+  background-color: rgba(255, 255, 255, 0.7);
   font-family: var(--font-mono);
   font-size: 0.65rem;
   font-weight: 600;
@@ -205,32 +498,57 @@ button.surface-card-interactive:active:not(:disabled) {
   line-height: 1.2;
 }
 
+/* ============================================================================
+   GPU Spring Transitions (Pages, Portals, Tabs, Modals, Exam Questions)
+   ============================================================================ */
 @keyframes panelFadeIn {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    transform: translate3d(0, 10px, 0) scale(0.992);
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: none;
   }
 }
 
 @keyframes modalSpringIn {
   from {
     opacity: 0;
-    transform: scale(0.96) translateY(8px);
+    transform: translate3d(0, 12px, 0) scale(0.95);
   }
   to {
     opacity: 1;
-    transform: scale(1) translateY(0);
+    transform: none;
   }
 }
 
 @keyframes portalSlideFadeIn {
   from {
     opacity: 0;
-    transform: translate3d(0, 14px, 0);
+    transform: translate3d(0, 14px, 0) scale(0.992);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes tabSlideForward {
+  from {
+    opacity: 0;
+    transform: translate3d(24px, 0, 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes tabSlideBackward {
+  from {
+    opacity: 0;
+    transform: translate3d(-24px, 0, 0);
   }
   to {
     opacity: 1;
@@ -239,11 +557,31 @@ button.surface-card-interactive:active:not(:disabled) {
 }
 
 .panel-enter {
-  animation: panelFadeIn 280ms var(--ease-ios);
+  animation: panelFadeIn 320ms var(--ease-ios) backwards;
 }
 
 .portal-transition-enter {
-  animation: portalSlideFadeIn 320ms var(--ease-ios) backwards;
+  animation: portalSlideFadeIn 360ms var(--ease-ios) backwards;
+}
+
+.tab-slide-forward {
+  animation: tabSlideForward 340ms var(--ease-ios) backwards;
+}
+
+.tab-slide-backward {
+  animation: tabSlideBackward 340ms var(--ease-ios) backwards;
+}
+
+.tab-slide-up {
+  animation: panelFadeIn 320ms var(--ease-ios) backwards;
+}
+
+.question-slide-next {
+  animation: tabSlideForward 300ms var(--ease-ios) backwards;
+}
+
+.question-slide-prev {
+  animation: tabSlideBackward 300ms var(--ease-ios) backwards;
 }
 
 /* Expressive Virtual Pet Keyframes (Compositor-only transform/opacity) */
@@ -432,20 +770,34 @@ button.surface-card-interactive:active:not(:disabled) {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .ios-mesh-backdrop::before,
+  .ios-mesh-backdrop::after {
+    animation: none;
+  }
   .surface-card,
   .glass-card,
   .surface-card-interactive,
-  .btn-press {
-    transition: none;
+  .liquid-option-card,
+  .btn-press,
+  .liquid-morph-pill,
+  .liquid-morph-pill-accent,
+  .liquid-morph-ring {
+    transition: none !important;
   }
   .surface-card-interactive:hover,
   .btn-press:hover:not(:disabled),
   .btn-press:active:not(:disabled),
+  .liquid-option-card:active,
   button.surface-card-interactive:active:not(:disabled) {
     transform: none;
   }
   .panel-enter,
   .portal-transition-enter,
+  .tab-slide-forward,
+  .tab-slide-backward,
+  .tab-slide-up,
+  .question-slide-next,
+  .question-slide-prev,
   .glass-modal,
   .pet-breathe,
   .pet-proud,
@@ -480,6 +832,7 @@ button.surface-card-interactive:active:not(:disabled) {
 .rich-question-content {
   overflow-wrap: anywhere;
   max-width: 100%;
+  color: #090d16;
 }
 
 .rich-question-content table {
@@ -490,20 +843,20 @@ button.surface-card-interactive:active:not(:disabled) {
   border-collapse: collapse;
   margin: 0.75rem 0;
   font-size: 0.9rem;
-  background-color: rgba(255, 255, 255, 0.72);
-  border-radius: 0.5rem;
+  background-color: rgba(255, 255, 255, 0.82);
+  border-radius: 0.75rem;
 }
 
 .rich-question-content th,
 .rich-question-content td {
-  border: 1px solid rgba(148, 163, 184, 0.6);
+  border: 1px solid rgba(148, 163, 184, 0.55);
   padding: 0.5rem 0.75rem;
   text-align: left;
   vertical-align: top;
 }
 
 .rich-question-content th {
-  background-color: rgba(241, 245, 249, 0.8);
+  background-color: rgba(239, 246, 255, 0.9);
   font-weight: 600;
 }
 
@@ -512,13 +865,13 @@ button.surface-card-interactive:active:not(:disabled) {
   height: auto;
   border-radius: 0.75rem;
   margin: 0.5rem 0;
-  border: 1px solid rgba(255, 255, 255, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.85);
 }
 
 .rich-question-content blockquote,
 .rich-question-content .reading-box {
-  border: 1px solid rgba(203, 213, 225, 0.75);
-  background-color: rgba(255, 255, 255, 0.55);
+  border: 1px solid rgba(191, 219, 254, 0.85);
+  background-color: rgba(255, 255, 255, 0.74);
   padding: 0.75rem 1rem;
   border-radius: 0.75rem;
   margin: 0.5rem 0;

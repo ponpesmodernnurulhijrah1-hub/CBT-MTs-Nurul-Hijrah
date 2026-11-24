@@ -20,6 +20,7 @@ import {
   shouldSoftReloadFromSwHeartbeat,
 } from './utils/updaterLogic';
 import { syncDocumentDeviceAttributes } from './utils/deviceViewport';
+import { useLiquidSpecularGlobal } from './hooks/useLiquidMotion';
 import type { TeacherTab } from './components/TeacherTutorAssistant';
 import type { AdminTab } from './components/AdminPortal';
 import type { PetActivityEvent, PetAppContextSummary, PetClientAction } from './utils/virtualPetUtils';
@@ -72,6 +73,7 @@ const ADMIN_TABS: AdminTab[] = [
 ];
 
 export default function App() {
+  useLiquidSpecularGlobal();
   const [activeRole, setActiveRole] = useState<UserRole>('siswa');
   const [isExamLocked, setIsExamLocked] = useState(false);
   const [qrModalOpen, setQrModalOpen] = useState(false);
@@ -800,11 +802,11 @@ export default function App() {
         )}
       </div>
 
-      <footer className="relative z-10 border-t border-white/45 bg-white/30 backdrop-blur-md px-4 sm:px-6 pt-4 pb-24 sm:pb-20 lg:pb-5 text-center text-xs font-medium text-slate-600 no-print">
+      <footer className="relative z-10 liquid-header border-t border-b-0 border-white/55 px-4 sm:px-6 pt-4 pb-24 sm:pb-20 lg:pb-5 text-center text-xs font-medium text-slate-700 no-print">
         <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-center gap-x-3 gap-y-2">
           <span>CBT MTs Nurul Hijrah &middot; Sistem Evaluasi Digital Terpadu</span>
           <span className="text-slate-400">&middot;</span>
-          <span className="font-mono-tabular font-semibold text-slate-700">
+          <span className="font-mono-tabular font-semibold text-slate-800">
             v{currentVersion} &middot; #{currentBuildHash.slice(0, 8)}
           </span>
           {!isExamLocked && (

@@ -1,4 +1,4 @@
-import React, { lazy, Suspense, useMemo, useState } from 'react';
+import React, { lazy, Suspense, useMemo, useRef, useState } from 'react';
 import {
   LayoutDashboard,
   BookMarked,
@@ -41,6 +41,7 @@ import type {
 import { SyncStatusIndicator } from './SyncStatusIndicator';
 import { printPrivacySafeTeacherDirectory } from '../utils/exportHelpers';
 import { getTeacherSubjects } from '../utils/storeSyncUtils';
+import { useLiquidMorphPill, useTabSlideDirection } from '../hooks/useLiquidMotion';
 
 const BankSoalPanel = lazy(() =>
   import('./BankSoalPanel').then((m) => ({ default: m.BankSoalPanel }))
@@ -81,6 +82,18 @@ export type AdminTab =
   | 'monitoring'
   | 'rekap'
   | 'log-sinkron';
+
+const ADMIN_TAB_ORDER: readonly AdminTab[] = [
+  'ringkasan',
+  'mapel',
+  'kelas',
+  'guru',
+  'bank-jadwal',
+  'ai-import',
+  'monitoring',
+  'rekap',
+  'log-sinkron',
+];
 
 interface AdminPortalProps {
   loggedAdmin: AdminAccount | null;
@@ -190,6 +203,18 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     onActiveTabChange?.(next);
   };
   const [rekapPresetStatus, setRekapPresetStatus] = useState<'ALL' | 'Selesai' | 'Pelanggaran'>('ALL');
+  const mobNavRef = useRef<HTMLElement | null>(null);
+  const deskNavRef = useRef<HTMLElement | null>(null);
+  const tabSlideDirection = useTabSlideDirection(ADMIN_TAB_ORDER, activeTab);
+  const tabSlideClass =
+    tabSlideDirection === 'forward'
+      ? 'tab-slide-forward'
+      : tabSlideDirection === 'backward'
+        ? 'tab-slide-backward'
+        : 'tab-slide-up';
+  const navMorphSignature = `${loggedAdmin?.id ?? 'out'}-${subjects.length}-${classes.length}-${teachers.length}-${questions.length}-${liveStreams.length}-${results.length}-${syncLogs.length}`;
+  const mobMorph = useLiquidMorphPill(mobNavRef, loggedAdmin ? activeTab : null, navMorphSignature);
+  const deskMorph = useLiquidMorphPill(deskNavRef, loggedAdmin ? activeTab : null, navMorphSignature);
 
   // Subject CRUD & Search state
   const [subjNama, setSubjNama] = useState('');
@@ -574,23 +599,32 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
         {/* Mobile & Tablet Horizontal Scrollable Tab Strip (< lg) */}
         <nav
+          ref={mobNavRef}
           aria-label="Menu Super Admin Mobile"
-          className="lg:hidden flex items-center gap-2 overflow-x-auto no-scrollbar pb-1"
+          className="relative lg:hidden flex items-center gap-1.5 overflow-x-auto no-scrollbar rounded-2xl border border-white/55 border-t-white/85 border-l-white/75 bg-white/35 backdrop-blur-2xl backdrop-saturate-[180%] p-1.5 shadow-[inset_0_1px_1px_rgba(255,255,255,0.82),0_10px_24px_-14px_rgba(30,58,138,0.16)]"
         >
+          <span
+            aria-hidden="true"
+            style={mobMorph.pillStyle}
+            className="liquid-morph-pill-accent rounded-xl z-0"
+          />
           {navItems.map((item) => {
             const isActive = activeTab === item.id;
             return (
               <button
                 key={`mob-${item.id}`}
                 type="button"
+                data-morph-active={isActive ? 'true' : undefined}
                 onClick={() => {
                   if (item.id === 'rekap') setRekapPresetStatus('ALL');
                   setActiveTab(item.id);
                 }}
-                className={`btn-press min-h-[42px] inline-flex items-center gap-2 rounded-2xl border px-3.5 py-2 text-xs font-semibold whitespace-nowrap shrink-0 transition-colors ${
+                className={`btn-press relative z-10 min-h-[42px] inline-flex items-center gap-2 rounded-xl border px-3.5 py-2 text-xs font-semibold whitespace-nowrap shrink-0 transition-colors duration-200 ${
                   isActive
-                    ? 'border-emerald-600/50 bg-emerald-700 text-white shadow-xs'
-                    : 'border-white/70 bg-white/60 text-slate-800 hover:bg-white/85'
+                    ? mobMorph.visible
+                      ? 'border-transparent text-white'
+                      : 'border-emerald-600/50 bg-emerald-700 text-white shadow-xs'
+                    : 'border-transparent text-slate-800 hover:bg-white/45'
                 }`}
               >
                 {item.icon}
@@ -610,21 +644,33 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         </nav>
 
         {/* Desktop Vertical Navigation Rail (>= lg) */}
-        <nav aria-label="Menu Super Admin Desktop" className="hidden lg:block surface-card rounded-3xl p-2 space-y-1">
+        <nav
+          ref={deskNavRef}
+          aria-label="Menu Super Admin Desktop"
+          className="relative hidden lg:block surface-card rounded-3xl p-2 space-y-1"
+        >
+          <span
+            aria-hidden="true"
+            style={deskMorph.pillStyle}
+            className="liquid-morph-pill-accent rounded-xl z-0"
+          />
           {navItems.map((item) => {
             const isActive = activeTab === item.id;
             return (
               <button
                 key={item.id}
                 type="button"
+                data-morph-active={isActive ? 'true' : undefined}
                 onClick={() => {
                   if (item.id === 'rekap') setRekapPresetStatus('ALL');
                   setActiveTab(item.id);
                 }}
-                className={`btn-press flex w-full items-center justify-between gap-2 rounded-xl px-3 py-2.5 text-xs font-semibold transition-colors ${
+                className={`btn-press relative z-10 flex w-full items-center justify-between gap-2 rounded-xl px-3 py-2.5 text-xs font-semibold transition-colors duration-200 ${
                   isActive
-                    ? 'bg-emerald-700 text-white shadow-xs'
-                    : 'text-slate-700 hover:bg-white/60 hover:text-slate-900'
+                    ? deskMorph.visible
+                      ? 'text-white'
+                      : 'bg-emerald-700 text-white shadow-xs'
+                    : 'text-slate-700 hover:bg-white/45 hover:text-slate-950'
                 }`}
               >
                 <span className="flex items-center gap-2.5 min-w-0">
@@ -688,7 +734,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         </div>
 
         {activeTab === 'ringkasan' && (
-          <div className="space-y-6 panel-enter">
+          <div key="ringkasan" className={`space-y-6 ${tabSlideClass}`} data-admin-tab-panel="ringkasan">
             {/* Global Quick Jump / Search Bar */}
             <div className="surface-card p-4 space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -992,7 +1038,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
         {/* TAB: DYNAMIC SUBJECTS */}
         {activeTab === 'mapel' && (
-          <div className="space-y-5 panel-enter">
+          <div key="mapel" className={`space-y-5 ${tabSlideClass}`} data-admin-tab-panel="mapel">
             <form
               onSubmit={async (e) => {
                 e.preventDefault();
@@ -1186,7 +1232,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
         {/* TAB: DYNAMIC CLASSES */}
         {activeTab === 'kelas' && (
-          <div className="space-y-5 panel-enter">
+          <div key="kelas" className={`space-y-5 ${tabSlideClass}`} data-admin-tab-panel="kelas">
             <form
               onSubmit={async (e) => {
                 e.preventDefault();
@@ -1322,7 +1368,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
         {/* TAB: PRIVACY-HARDENED TEACHER MANAGEMENT */}
         {activeTab === 'guru' && (
-          <div className="space-y-5 panel-enter">
+          <div key="guru" className={`space-y-5 ${tabSlideClass}`} data-admin-tab-panel="guru">
             <form
               onSubmit={async (e) => {
                 e.preventDefault();
@@ -1734,87 +1780,97 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
         {/* TAB: BANK SOAL & JADWAL PUSAT */}
         {activeTab === 'bank-jadwal' && (
-          <Suspense fallback={<PanelFallback />}>
-            <div className="space-y-8 panel-enter">
-              <BankSoalPanel
-                questions={questions}
-                subjects={subjectNames}
-                selectedSubject={effectiveAdminMapel}
-                onChangeSubject={setAdminSelectedMapel}
-                teacherName={loggedAdmin.nama}
-                onAddQuestion={onAddQuestion}
-                onUpdateQuestion={onUpdateQuestion}
-                onDeleteQuestion={onDeleteQuestion}
-                onDeleteQuestionsBatch={onDeleteQuestionsBatch}
-                onClearSubjectBank={onClearBankBySubject}
-              />
+          <div key="bank-jadwal" className={tabSlideClass} data-admin-tab-panel="bank-jadwal">
+            <Suspense fallback={<PanelFallback />}>
+              <div className="space-y-8">
+                <BankSoalPanel
+                  questions={questions}
+                  subjects={subjectNames}
+                  selectedSubject={effectiveAdminMapel}
+                  onChangeSubject={setAdminSelectedMapel}
+                  teacherName={loggedAdmin.nama}
+                  onAddQuestion={onAddQuestion}
+                  onUpdateQuestion={onUpdateQuestion}
+                  onDeleteQuestion={onDeleteQuestion}
+                  onDeleteQuestionsBatch={onDeleteQuestionsBatch}
+                  onClearSubjectBank={onClearBankBySubject}
+                />
 
-              <JadwalTesPanel
-                exams={exams}
-                questions={questions}
-                subjects={subjectNames}
-                classes={classNames}
-                teacherName={loggedAdmin.nama}
-                onSaveExam={onSaveExam}
-                onToggleExamActive={onToggleExamActive}
-                onDeleteExam={onDeleteExam}
-              />
-            </div>
-          </Suspense>
+                <JadwalTesPanel
+                  exams={exams}
+                  questions={questions}
+                  subjects={subjectNames}
+                  classes={classNames}
+                  teacherName={loggedAdmin.nama}
+                  onSaveExam={onSaveExam}
+                  onToggleExamActive={onToggleExamActive}
+                  onDeleteExam={onDeleteExam}
+                />
+              </div>
+            </Suspense>
+          </div>
         )}
 
         {/* TAB: INTEGRATED AI QUESTION STUDIO */}
         {activeTab === 'ai-import' && (
-          <Suspense fallback={<PanelFallback />}>
-            <SmartImportPanel
-              subjects={subjectNames}
-              selectedSubject={effectiveAdminMapel}
-              onChangeSubject={setAdminSelectedMapel}
-              teacherName={loggedAdmin.nama}
-              onSaveImportedQuestions={onAddQuestionsBatch}
-              onSuccessRedirect={() => setActiveTab('bank-jadwal')}
-            />
-          </Suspense>
+          <div key="ai-import" className={tabSlideClass} data-admin-tab-panel="ai-import">
+            <Suspense fallback={<PanelFallback />}>
+              <SmartImportPanel
+                subjects={subjectNames}
+                selectedSubject={effectiveAdminMapel}
+                onChangeSubject={setAdminSelectedMapel}
+                teacherName={loggedAdmin.nama}
+                onSaveImportedQuestions={onAddQuestionsBatch}
+                onSuccessRedirect={() => setActiveTab('bank-jadwal')}
+              />
+            </Suspense>
+          </div>
         )}
 
         {/* TAB: LIVE MONITORING ALL PARTICIPANTS */}
         {activeTab === 'monitoring' && (
-          <Suspense fallback={<PanelFallback />}>
-            <LiveMonitoringGrid
-              sessions={liveStreams}
-              onSendWarning={onSendProctorWarning}
-              emptyTitle="Belum ada peserta ujian yang sedang aktif di seluruh mata pelajaran."
-            />
-          </Suspense>
+          <div key="monitoring" className={tabSlideClass} data-admin-tab-panel="monitoring">
+            <Suspense fallback={<PanelFallback />}>
+              <LiveMonitoringGrid
+                sessions={liveStreams}
+                onSendWarning={onSendProctorWarning}
+                emptyTitle="Belum ada peserta ujian yang sedang aktif di seluruh mata pelajaran."
+              />
+            </Suspense>
+          </div>
         )}
 
         {/* TAB: REKAP NILAI SEMUA MAPEL */}
         {activeTab === 'rekap' && (
-          <Suspense fallback={<PanelFallback />}>
-            <ResultsPanel
-              key={rekapPresetStatus}
-              results={results}
-              exams={exams}
-              subjects={subjectNames}
-              classes={classNames}
-              initialStatusFilter={rekapPresetStatus}
-              onUpdateEssayScore={onUpdateEssayScore}
-              onDeleteResult={onDeleteResult}
-              onOpenGoogleSheets={onOpenGoogleSheets}
-            />
-          </Suspense>
+          <div key="rekap" className={tabSlideClass} data-admin-tab-panel="rekap">
+            <Suspense fallback={<PanelFallback />}>
+              <ResultsPanel
+                key={rekapPresetStatus}
+                results={results}
+                exams={exams}
+                subjects={subjectNames}
+                classes={classNames}
+                initialStatusFilter={rekapPresetStatus}
+                onUpdateEssayScore={onUpdateEssayScore}
+                onDeleteResult={onDeleteResult}
+                onOpenGoogleSheets={onOpenGoogleSheets}
+              />
+            </Suspense>
+          </div>
         )}
 
         {/* TAB: LOG SINKRONISASI REAL-TIME */}
         {activeTab === 'log-sinkron' && (
-          <Suspense fallback={<PanelFallback />}>
-            <SyncLogsPanel
-              logs={syncLogs}
-              syncInfo={syncInfo}
-              onForceSync={onForceSync}
-              onOpenDiagnostics={onOpenDiagnostics}
-            />
-          </Suspense>
+          <div key="log-sinkron" className={tabSlideClass} data-admin-tab-panel="log-sinkron">
+            <Suspense fallback={<PanelFallback />}>
+              <SyncLogsPanel
+                logs={syncLogs}
+                syncInfo={syncInfo}
+                onForceSync={onForceSync}
+                onOpenDiagnostics={onOpenDiagnostics}
+              />
+            </Suspense>
+          </div>
         )}
       </section>
     </div>
