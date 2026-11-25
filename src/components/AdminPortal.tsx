@@ -1041,6 +1041,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             <Suspense fallback={<PanelFallback />}>
               <TeacherAnalytics
                 results={results}
+                questions={questions}
+                subjectLabel="Semua Mata Pelajaran"
                 title="Statistik Nilai Seluruh Mata Pelajaran — MTs Nurul Hijrah"
                 onNavigateResults={(presetStatus) => {
                   setRekapPresetStatus(presetStatus || 'ALL');

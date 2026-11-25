@@ -912,6 +912,8 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
             <Suspense fallback={<TabLoading />}>
               <TeacherAnalytics
                 results={subjectResults}
+                questions={subjectQuestions}
+                subjectLabel={teacherSubject}
                 title={`Analitik Nilai & Performa Kelas — ${teacherSubject}`}
                 onNavigateResults={(presetStatus) => {
                   setResultsPresetStatus(presetStatus || 'ALL');

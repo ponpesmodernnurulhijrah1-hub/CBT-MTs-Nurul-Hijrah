@@ -25,6 +25,7 @@ import {
   type PetClientAction,
   type PetMood,
 } from '../utils/virtualPetUtils';
+import { formatClientFetchError, safeParseResponseJson } from '../utils/aiQuestionUtils';
 import { PetCharacterSvg } from './PetCharacterSvg';
 
 const PET_STORAGE_KEY = 'cbt_virtual_pet_character_v1';
@@ -539,18 +540,18 @@ export const VirtualPetAssistant: React.FC<VirtualPetAssistantProps> = ({
         }),
       });
 
-      const data = (await res.json()) as {
+      const { data } = await safeParseResponseJson<{
         reply?: string;
         actions?: PetClientAction[];
         error?: string;
-      };
+      }>(res);
 
-      if (!res.ok) {
+      if (!res.ok || !data) {
         setMessages((prev) => [
           ...prev,
           {
             role: 'model',
-            text: data.error || 'Maaf, asisten hewan gagal terhubung ke layanan AI.',
+            text: formatClientFetchError(null, res.status, data?.error),
           },
         ]);
         return;

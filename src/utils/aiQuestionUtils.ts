@@ -186,6 +186,97 @@ export function extractBalancedJsonArray(rawText: string): unknown[] {
   return [];
 }
 
+/**
+ * Safely parses a single JSON object from Gemini even if wrapped in markdown fences
+ * or accompanied by leading/trailing prose.
+ */
+export function extractBalancedJsonObject(rawText: string): Record<string, unknown> | null {
+  const cleaned = String(rawText || '')
+    .trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+
+  if (!cleaned) return null;
+
+  try {
+    const direct = JSON.parse(cleaned) as unknown;
+    if (direct && typeof direct === 'object' && !Array.isArray(direct)) {
+      return direct as Record<string, unknown>;
+    }
+  } catch {
+    // Attempt brace slice fallback
+  }
+
+  const start = cleaned.indexOf('{');
+  const end = cleaned.lastIndexOf('}');
+  if (start !== -1 && end > start) {
+    try {
+      const sliced = JSON.parse(cleaned.slice(start, end + 1)) as unknown;
+      if (sliced && typeof sliced === 'object' && !Array.isArray(sliced)) {
+        return sliced as Record<string, unknown>;
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Splits an array into fixed-size batches for resilient client/server AI processing.
+ */
+export function chunkArray<T>(items: T[], size: number): T[][] {
+  if (!Array.isArray(items) || items.length === 0) return [];
+  const safeSize = Math.max(1, Math.floor(size));
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += safeSize) {
+    out.push(items.slice(i, i + safeSize));
+  }
+  return out;
+}
+
+/**
+ * Safely reads a Fetch API Response without crashing with SyntaxError when upstream proxies
+ * return HTML (e.g. 413 Payload Too Large, 502 Bad Gateway, 504 Timeout).
+ */
+export async function safeParseResponseJson<T>(
+  res: Response
+): Promise<{ data: T | null; rawText: string }> {
+  const rawText = await res.text();
+  if (!rawText.trim()) return { data: null, rawText };
+  try {
+    return { data: JSON.parse(rawText) as T, rawText };
+  } catch {
+    return { data: null, rawText };
+  }
+}
+
+/**
+ * Formats HTTP/network/timeout failures into clear Indonesian user guidance.
+ */
+export function formatClientFetchError(
+  err: unknown,
+  status?: number,
+  serverMessage?: string
+): string {
+  if (serverMessage && serverMessage.trim()) return serverMessage.trim();
+  if (err instanceof DOMException && err.name === 'AbortError') {
+    return 'Proses AI melebihi batas waktu koneksi. Coba bagi dokumen/jumlah soal menjadi lebih kecil atau gunakan mode analisis lokal.';
+  }
+  if (status === 413) {
+    return 'Ukuran dokumen/gambar terlalu besar untuk sekali kirim. Kurangi resolusi atau kirim bertahap.';
+  }
+  if (status === 429) {
+    return 'Batas kecepatan/kuota gratis AI tercapai sementara. Tunggu beberapa detik lalu coba ulang, atau gunakan mode Analisis Lokal (Gratis).';
+  }
+  if (status === 502 || status === 503 || status === 504) {
+    return 'Server AI sedang sibuk atau melebihi batas waktu sementara. Silakan coba lagi dalam beberapa detik.';
+  }
+  return 'Koneksi ke server AI terganggu. Periksa jaringan atau gunakan Analisis Lokal (Gratis Tanpa Kuota).';
+}
+
 function normalizeQuestionType(rawType: unknown, opsiCount: number, rawKeys: string[]): QuestionType {
   const upper = String(rawType || '')
     .trim()

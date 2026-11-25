@@ -16,12 +16,28 @@ import {
   ShieldAlert,
   ArrowUpRight,
   X,
+  BrainCircuit,
+  Sparkles,
+  Loader2,
+  AlertTriangle,
+  FileCheck2,
 } from 'lucide-react';
-import type { ExamResult } from '../types/cbt';
+import type { ExamResult, Question } from '../types/cbt';
 import { computeClassAverages, computeScoreDistribution } from '../utils/examLogic';
+import {
+  analyzeQuestionBankAndResults,
+  type AiDeepQuestionReview,
+} from '../utils/questionAnalysis';
+import {
+  chunkArray,
+  formatClientFetchError,
+  safeParseResponseJson,
+} from '../utils/aiQuestionUtils';
 
 interface TeacherAnalyticsProps {
   results: ExamResult[];
+  questions?: Question[];
+  subjectLabel?: string;
   title?: string;
   onNavigateResults?: (presetStatus?: 'ALL' | 'Selesai' | 'Pelanggaran') => void;
 }
@@ -30,14 +46,147 @@ const BUCKET_COLORS = ['#dc2626', '#d97706', '#0284c7', '#059669'];
 
 export const TeacherAnalytics: React.FC<TeacherAnalyticsProps> = ({
   results,
+  questions = [],
+  subjectLabel = 'Umum',
   title = 'Analisis Distribusi Nilai & Performa Kelas',
   onNavigateResults,
 }) => {
   const [selectedBucket, setSelectedBucket] = useState<string | null>(null);
   const [selectedClass, setSelectedClass] = useState<string | null>(null);
 
+  // Item analysis state (Free local CTT + Free-Tier Gemini AI deep review)
+  const [itemFilter, setItemFilter] = useState<'ALL' | 'NEEDS_REVIEW' | 'HOTS'>('ALL');
+  const [aiReviewsMap, setAiReviewsMap] = useState<Record<string, AiDeepQuestionReview>>({});
+  const [aiAnalyzeLoading, setAiAnalyzeLoading] = useState(false);
+  const [aiAnalyzeProgress, setAiAnalyzeProgress] = useState<string | null>(null);
+  const [aiAnalyzeError, setAiAnalyzeError] = useState<string | null>(null);
+  const [aiAnalyzeSuccess, setAiAnalyzeSuccess] = useState<string | null>(null);
+
   const distribution = useMemo(() => computeScoreDistribution(results), [results]);
   const classAverages = useMemo(() => computeClassAverages(results), [results]);
+
+  const itemAnalysis = useMemo(
+    () => analyzeQuestionBankAndResults(questions, results),
+    [questions, results]
+  );
+
+  const filteredAnalysisItems = useMemo(() => {
+    return itemAnalysis.items.filter((item) => {
+      const aiRev = aiReviewsMap[item.questionId];
+      const effectiveQuality = aiRev?.kualitas || item.kualitas;
+      const effectiveCog = aiRev?.levelKognitif || item.levelKognitif;
+      if (itemFilter === 'NEEDS_REVIEW') return effectiveQuality !== 'Baik';
+      if (itemFilter === 'HOTS') return effectiveCog === 'HOTS (C4-C6)';
+      return true;
+    });
+  }, [itemAnalysis.items, itemFilter, aiReviewsMap]);
+
+  const handleRunFreeAiQuestionAnalysis = async () => {
+    if (questions.length === 0 || aiAnalyzeLoading) return;
+    setAiAnalyzeLoading(true);
+    setAiAnalyzeProgress(null);
+    setAiAnalyzeError(null);
+    setAiAnalyzeSuccess(null);
+
+    const payloadItems = itemAnalysis.items.map((item) => {
+      const sourceQ = questions.find((q) => q.id === item.questionId);
+      return {
+        id: item.questionId,
+        nomor: item.nomor,
+        tipe: item.tipe,
+        pertanyaanHtml: sourceQ?.pertanyaanHtml || item.plainText,
+        opsi: sourceQ?.opsi || [],
+        kunciJawaban: item.kunciJawaban,
+        bobot: item.bobot,
+        stats:
+          item.totalResponden > 0
+            ? {
+                totalResponden: item.totalResponden,
+                correctPercent: item.correctPercent,
+                tingkatKesukaranP: item.tingkatKesukaranP,
+                dayaPembedaD: item.dayaPembedaD,
+              }
+            : undefined,
+      };
+    });
+
+    const batches = chunkArray(payloadItems, 8);
+    const mergedMap: Record<string, AiDeepQuestionReview> = { ...aiReviewsMap };
+    let analyzedCount = 0;
+    let lastModel = 'gemini-3.1-flash-lite';
+    let partialWarn: string | null = null;
+
+    try {
+      for (let b = 0; b < batches.length; b++) {
+        if (batches.length > 1) {
+          setAiAnalyzeProgress(`Menganalisis kelompok ${b + 1} dari ${batches.length}...`);
+        }
+        const controller = new AbortController();
+        const timer = window.setTimeout(() => controller.abort(), 50000);
+        try {
+          const res = await fetch('/api/gemini/analyze-questions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: controller.signal,
+            body: JSON.stringify({
+              mataPelajaran: subjectLabel,
+              items: batches[b],
+            }),
+          });
+          const { data } = await safeParseResponseJson<{
+            reviews?: AiDeepQuestionReview[];
+            modelUsed?: string;
+            warning?: string;
+            error?: string;
+          }>(res);
+
+          if (!res.ok) {
+            const msg = formatClientFetchError(null, res.status, data?.error);
+            if (analyzedCount > 0) {
+              partialWarn = `Sebagian selesai (${analyzedCount} soal). Kelompok ${b + 1} terhenti: ${msg}`;
+              break;
+            }
+            setAiAnalyzeError(msg);
+            return;
+          }
+
+          if (data?.modelUsed) lastModel = data.modelUsed;
+          if (Array.isArray(data?.reviews)) {
+            for (const rev of data.reviews) {
+              if (rev && rev.id) {
+                mergedMap[rev.id] = rev;
+                analyzedCount += 1;
+              }
+            }
+            setAiReviewsMap({ ...mergedMap });
+          }
+          if (data?.warning) partialWarn = data.warning;
+        } catch (err) {
+          const msg = formatClientFetchError(err);
+          if (analyzedCount > 0) {
+            partialWarn = `Sebagian selesai (${analyzedCount} soal). Kelompok ${b + 1} terhenti: ${msg}`;
+            break;
+          }
+          setAiAnalyzeError(msg);
+          return;
+        } finally {
+          window.clearTimeout(timer);
+        }
+      }
+
+      if (analyzedCount > 0) {
+        setAiAnalyzeSuccess(
+          `Analisis AI (${lastModel} · Gratis) selesai untuk ${analyzedCount} butir soal.`
+        );
+      } else {
+        setAiAnalyzeError('AI tidak mengembalikan hasil analisis soal. Coba ulangi beberapa saat lagi.');
+      }
+      if (partialWarn) setAiAnalyzeError(partialWarn);
+    } finally {
+      setAiAnalyzeLoading(false);
+      setAiAnalyzeProgress(null);
+    }
+  };
 
   const totalSubmissions = results.length;
   const avgScore =
@@ -411,6 +560,226 @@ export const TeacherAnalytics: React.FC<TeacherAnalyticsProps> = ({
             </div>
           )}
         </>
+      )}
+
+      {/* Question Item Psychometric & Free-Tier AI Analysis Section */}
+      {questions.length > 0 && (
+        <div className="surface-card p-5 space-y-4">
+          <div className="flex flex-wrap items-start justify-between gap-3 border-b border-white/50 pb-4">
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <BrainCircuit className="h-4 w-4 text-emerald-700 shrink-0" />
+                <h4 className="font-display text-sm font-bold text-slate-900">
+                  Analisis Butir &amp; Kualitas Soal (Gratis Lokal + AI)
+                </h4>
+              </div>
+              <p className="mt-0.5 text-xs text-slate-500">
+                Analisis psikometrik (Tingkat Kesukaran P, Daya Pembeda D, Distribusi Pengecoh &amp; Struktur Soal) berjalan otomatis 100% gratis tanpa kuota, serta mendukung telaah AI Gemini Free Tier.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="glass-subtle inline-flex items-center gap-1 rounded-xl p-1">
+                {(
+                  [
+                    { id: 'ALL', label: `Semua (${itemAnalysis.totalQuestions})` },
+                    {
+                      id: 'NEEDS_REVIEW',
+                      label: `Perlu Revisi (${itemAnalysis.revisiCount + itemAnalysis.kritisCount})`,
+                    },
+                    { id: 'HOTS', label: `HOTS (${itemAnalysis.hotsCount})` },
+                  ] as const
+                ).map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setItemFilter(tab.id)}
+                    className={`btn-press rounded-lg px-2.5 py-1 text-[11px] font-semibold transition-colors whitespace-nowrap ${
+                      itemFilter === tab.id
+                        ? 'bg-white/85 text-slate-900 shadow-xs'
+                        : 'text-slate-600 hover:bg-white/40 hover:text-slate-900'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+
+              <button
+                type="button"
+                disabled={aiAnalyzeLoading || questions.length === 0}
+                onClick={handleRunFreeAiQuestionAnalysis}
+                className="btn-press inline-flex items-center gap-1.5 rounded-xl bg-emerald-700 px-3.5 py-2 text-xs font-semibold text-white hover:bg-emerald-800 disabled:opacity-55 shadow-sm whitespace-nowrap shrink-0"
+              >
+                {aiAnalyzeLoading ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Sparkles className="h-3.5 w-3.5" />
+                )}
+                <span>
+                  {aiAnalyzeLoading
+                    ? aiAnalyzeProgress || 'Menganalisis AI...'
+                    : 'Analisis Mendalam AI (Gratis)'}
+                </span>
+              </button>
+            </div>
+          </div>
+
+          {/* Summary Stats Row */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="glass-subtle rounded-2xl p-3">
+              <p className="text-[11px] text-slate-500">Rata-rata Skor Struktur</p>
+              <p className="mt-1 font-mono-tabular text-lg font-bold text-slate-900">
+                {itemAnalysis.averageQualityScore}
+                <span className="text-xs font-normal text-slate-500"> / 100</span>
+              </p>
+            </div>
+            <div className="glass-subtle rounded-2xl p-3">
+              <p className="text-[11px] text-slate-500">Soal Layak (Baik)</p>
+              <p className="mt-1 font-mono-tabular text-lg font-bold text-emerald-700">
+                {itemAnalysis.baikCount}
+                <span className="text-xs font-normal text-slate-500">
+                  {' '}
+                  / {itemAnalysis.totalQuestions}
+                </span>
+              </p>
+            </div>
+            <div className="glass-subtle rounded-2xl p-3">
+              <p className="text-[11px] text-slate-500">Komposisi Kognitif</p>
+              <p className="mt-1 font-mono-tabular text-xs font-bold text-slate-900">
+                HOTS {itemAnalysis.hotsCount} · MOTS {itemAnalysis.motsCount} · LOTS{' '}
+                {itemAnalysis.lotsCount}
+              </p>
+            </div>
+            <div className="glass-subtle rounded-2xl p-3">
+              <p className="text-[11px] text-slate-500">Perlu Peninjauan</p>
+              <p
+                className={`mt-1 font-mono-tabular text-lg font-bold ${
+                  itemAnalysis.kritisCount > 0
+                    ? 'text-red-600'
+                    : itemAnalysis.revisiCount > 0
+                      ? 'text-amber-700'
+                      : 'text-emerald-700'
+                }`}
+              >
+                {itemAnalysis.revisiCount + itemAnalysis.kritisCount}
+              </p>
+            </div>
+          </div>
+
+          {aiAnalyzeError && (
+            <div className="flex items-start gap-2 rounded-xl border border-amber-300/70 bg-amber-50/90 px-3.5 py-2.5 text-xs text-amber-900">
+              <AlertTriangle className="h-4 w-4 shrink-0 text-amber-700 mt-0.5" />
+              <span>{aiAnalyzeError}</span>
+            </div>
+          )}
+
+          {aiAnalyzeSuccess && (
+            <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50/90 px-3.5 py-2.5 text-xs font-medium text-emerald-800">
+              <FileCheck2 className="h-4 w-4 shrink-0" />
+              <span>{aiAnalyzeSuccess}</span>
+            </div>
+          )}
+
+          {/* Question Analysis Cards */}
+          <div className="space-y-3">
+            {filteredAnalysisItems.length === 0 ? (
+              <p className="py-6 text-center text-xs text-slate-500">
+                Tidak ada butir soal pada filter kategori ini.
+              </p>
+            ) : (
+              filteredAnalysisItems.slice(0, 30).map((item) => {
+                const aiRev = aiReviewsMap[item.questionId];
+                const quality = aiRev?.kualitas || item.kualitas;
+                const cogLevel = aiRev?.levelKognitif || item.levelKognitif;
+                const keyStatus = aiRev?.validitasKunci || item.validitasKunci;
+
+                return (
+                  <div
+                    key={item.questionId}
+                    className="glass-subtle rounded-2xl p-4 space-y-2.5 text-xs"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-mono-tabular font-bold text-slate-900">
+                          Soal #{item.nomor}
+                        </span>
+                        <span className="text-slate-500">({item.tipe})</span>
+                        <span className="font-semibold text-sky-800">{cogLevel}</span>
+                        <span
+                          className={`font-semibold ${
+                            quality === 'Baik'
+                              ? 'text-emerald-700'
+                              : quality === 'Kritis'
+                                ? 'text-red-600'
+                                : 'text-amber-700'
+                          }`}
+                        >
+                          &middot; Kualitas: {quality} ({item.skorKualitasStruktur}/100)
+                        </span>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-3 font-mono-tabular text-[11px] text-slate-600">
+                        <span>Kunci: {item.kunciJawaban.join(', ') || '-'} ({keyStatus})</span>
+                        {item.totalResponden > 0 ? (
+                          <>
+                            <span>
+                              Benar: <strong className="text-slate-900">{item.correctPercent}%</strong> ({item.correctCount}/{item.totalResponden})
+                            </span>
+                            <span>
+                              P = {item.tingkatKesukaranP} ({item.kategoriKesukaran})
+                            </span>
+                            {item.dayaPembedaD !== null && (
+                              <span>
+                                D = {item.dayaPembedaD} ({item.kategoriDayaPembeda})
+                              </span>
+                            )}
+                          </>
+                        ) : (
+                          <span>Belum ada data jawaban siswa</span>
+                        )}
+                      </div>
+                    </div>
+
+                    <p className="text-slate-800 line-clamp-2">{item.plainText}</p>
+
+                    {item.distribusiOpsi.length > 0 && item.totalResponden > 0 && (
+                      <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                        {item.distribusiOpsi.map((opt) => (
+                          <span
+                            key={opt.label}
+                            className={`rounded-lg border px-2 py-0.5 font-mono-tabular text-[11px] ${
+                              opt.isKey
+                                ? 'border-emerald-300 bg-emerald-500/15 font-semibold text-emerald-900'
+                                : opt.count === 0
+                                  ? 'border-amber-300/70 bg-amber-500/10 text-amber-800'
+                                  : 'border-white/70 bg-white/55 text-slate-700'
+                            }`}
+                          >
+                            {opt.label}: {opt.percentage}% ({opt.count})
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="border-t border-white/50 pt-2 space-y-1 text-[11px]">
+                      <p className="text-slate-600">
+                        <strong className="text-slate-800">Analisis Lokal:</strong>{' '}
+                        {item.saranPerbaikanLokal}
+                      </p>
+                      {aiRev && (
+                        <p className="text-emerald-900">
+                          <strong>Telaah AI:</strong> {aiRev.catatanAnalisis}{' '}
+                          <span className="text-slate-700">Saran: {aiRev.saranPerbaikan}</span>
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
       )}
     </div>
   );

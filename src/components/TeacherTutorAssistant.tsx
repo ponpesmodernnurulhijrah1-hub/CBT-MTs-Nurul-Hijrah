@@ -7,6 +7,7 @@ import {
   ArrowRight,
   Sparkles,
 } from 'lucide-react';
+import { safeParseResponseJson } from '../utils/aiQuestionUtils';
 
 export type TeacherTab = 'analitik' | 'bank-soal' | 'import' | 'jadwal' | 'monitoring' | 'hasil';
 
@@ -115,9 +116,10 @@ export const TeacherTutorAssistant: React.FC<TeacherTutorAssistantProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: questionText, history: nextHistory }),
       });
-      const data = (await res.json()) as { reply?: string };
-      if (res.ok && data.reply) {
-        setMessages((prev) => [...prev, { role: 'model', text: data.reply! }]);
+      const { data } = await safeParseResponseJson<{ reply?: string }>(res);
+      const replyText = data?.reply;
+      if (res.ok && replyText) {
+        setMessages((prev) => [...prev, { role: 'model', text: replyText }]);
       } else if (localFallback) {
         setMessages((prev) => [...prev, { role: 'model', text: localFallback }]);
       } else {

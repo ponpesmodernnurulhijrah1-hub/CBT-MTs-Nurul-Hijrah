@@ -7,6 +7,10 @@ import {
   parseGeminiRetryDelayMs,
   chunkHtmlForAi,
   extractBalancedJsonArray,
+  extractBalancedJsonObject,
+  chunkArray,
+  safeParseResponseJson,
+  formatClientFetchError,
   normalizeAiQuestions,
 } from './aiQuestionUtils';
 
@@ -70,6 +74,28 @@ test('extractBalancedJsonArray handles fenced markdown and wrapped objects', () 
 
   const wrapped = '{"questions":[{"tipe":"ESAI","pertanyaanHtml":"<p>Jelaskan!</p>"}]}';
   assert.equal(extractBalancedJsonArray(wrapped).length, 1);
+});
+
+test('extractBalancedJsonObject safely parses fenced or noisy JSON object responses', () => {
+  const noisy = 'Berikut hasil:\n```json\n{"suggestedPercent": 85, "reason": "Tepat sekali."}\n```\nSemoga membantu.';
+  const obj = extractBalancedJsonObject(noisy);
+  assert.deepEqual(obj, { suggestedPercent: 85, reason: 'Tepat sekali.' });
+  assert.equal(extractBalancedJsonObject('invalid text'), null);
+});
+
+test('chunkArray & safeParseResponseJson handle batching and non-JSON proxy errors gracefully', async () => {
+  assert.deepEqual(chunkArray([1, 2, 3, 4, 5], 2), [[1, 2], [3, 4], [5]]);
+
+  const htmlErrorResponse = new Response('<html>504 Gateway Time-out</html>', {
+    status: 504,
+    headers: { 'Content-Type': 'text/html' },
+  });
+  const parsedHtml = await safeParseResponseJson<{ error?: string }>(htmlErrorResponse);
+  assert.equal(parsedHtml.data, null);
+  assert.ok(parsedHtml.rawText.includes('504'));
+
+  const msg = formatClientFetchError(null, 413);
+  assert.ok(msg.toLowerCase().includes('terlalu besar'));
 });
 
 test('normalizeAiQuestions strips option prefixes, normalizes keys, and restores images', () => {

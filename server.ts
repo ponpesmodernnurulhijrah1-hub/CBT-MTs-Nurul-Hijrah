@@ -7,14 +7,17 @@ import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import {
   GoogleGenAI,
+  ThinkingLevel,
   Type,
   type FunctionDeclaration,
   type GenerateContentParameters,
   type Schema,
 } from '@google/genai';
 import {
+  chunkArray,
   chunkHtmlForAi,
   extractBalancedJsonArray,
+  extractBalancedJsonObject,
   normalizeAiQuestions,
   parseGeminiRetryDelayMs,
   stripHtmlBoilerplateForAi,
@@ -243,8 +246,18 @@ async function callGeminiWithResilience(ai: GoogleGenAI, opts: ResilienceCallOpt
   const liteInBackoff = now < (modelBackoffUntilMs['gemini-3.1-flash-lite'] || 0);
   const hydrogenInBackoff = now < (modelBackoffUntilMs['gemini-4-hydrogen'] || 0);
 
-  const litePlan = { model: 'gemini-3.1-flash-lite', retries: 1, timeoutMs: 55000 };
-  const hydrogenPlan = { model: 'gemini-4-hydrogen', retries: 0, timeoutMs: 25000 };
+  const litePlan = {
+    model: 'gemini-3.1-flash-lite',
+    retries: 1,
+    timeoutMs: 32000,
+    thinkingLevel: ThinkingLevel.MINIMAL,
+  };
+  const hydrogenPlan = {
+    model: 'gemini-4-hydrogen',
+    retries: 0,
+    timeoutMs: 35000,
+    thinkingLevel: ThinkingLevel.LOW,
+  };
 
   const modelPlans: Array<typeof litePlan> = [];
   if (!liteInBackoff) {
@@ -268,6 +281,7 @@ async function callGeminiWithResilience(ai: GoogleGenAI, opts: ResilienceCallOpt
           (abortSignal) => {
             const config: Record<string, unknown> = {
               systemInstruction: opts.systemInstruction,
+              thinkingConfig: { thinkingLevel: plan.thinkingLevel },
               abortSignal,
             };
             if (opts.jsonSchema) {
@@ -782,7 +796,15 @@ ${JSON.stringify(sanitizedForAi)}`;
 
         lastModelUsed = modelUsed;
         const parsedRaw = extractBalancedJsonArray(response.text ?? '[]');
-        enhancedAll.push(...normalizeAiQuestions(parsedRaw, combinedAssets));
+        const normalizedSlice = normalizeAiQuestions(parsedRaw, combinedAssets);
+        if (normalizedSlice.length > 0) {
+          enhancedAll.push(...normalizedSlice);
+          if (normalizedSlice.length < slice.length) {
+            enhancedAll.push(...slice.slice(normalizedSlice.length));
+          }
+        } else {
+          enhancedAll.push(...slice);
+        }
       } catch (batchErr) {
         if (enhancedAll.length > 0) {
           enhancedAll.push(...questions.slice(offset));
@@ -874,10 +896,7 @@ ${JSON.stringify(cleanedItems)}`,
       },
     });
 
-    const parsed = JSON.parse((response.text ?? '{}').trim()) as {
-      suggestedPercent?: number;
-      reason?: string;
-    };
+    const parsed = extractBalancedJsonObject(response.text ?? '{}') || {};
     const safePercent = Math.max(0, Math.min(100, Math.round(Number(parsed.suggestedPercent) || 0)));
     const resultPayload = {
       suggestedPercent: safePercent,
@@ -887,6 +906,162 @@ ${JSON.stringify(cleanedItems)}`,
     res.json(resultPayload);
   } catch (err) {
     console.error('Gemini suggest-essay-score error:', err instanceof Error ? err.message : err);
+    const { status, message } = formatGeminiErrorMessage(err);
+    res.status(status).json({ error: message });
+  }
+});
+
+const QUESTION_ANALYSIS_SCHEMA: Schema = {
+  type: Type.ARRAY,
+  items: {
+    type: Type.OBJECT,
+    properties: {
+      id: { type: Type.STRING, description: 'ID unik soal persis seperti pada input' },
+      kualitas: { type: Type.STRING, description: 'Salah satu dari: Baik, Perlu Revisi, Kritis' },
+      levelKognitif: { type: Type.STRING, description: 'Salah satu dari: LOTS (C1-C2), MOTS (C3), HOTS (C4-C6)' },
+      validitasKunci: { type: Type.STRING, description: 'Salah satu dari: Valid, Meragukan, Perlu Cek' },
+      catatanAnalisis: { type: Type.STRING, description: 'Evaluasi singkat ketepatan kunci, kejelasan kalimat, dan kualitas pengecoh (1-2 kalimat)' },
+      saranPerbaikan: { type: Type.STRING, description: 'Rekomendasi perbaikan konkret dan praktis untuk guru (1 kalimat)' },
+    },
+    required: ['id', 'kualitas', 'levelKognitif', 'validitasKunci', 'catatanAnalisis', 'saranPerbaikan'],
+  },
+};
+
+// Server-side Free-Tier AI Pedagogical Question Item Analyzer
+app.post('/api/gemini/analyze-questions', async (req, res) => {
+  try {
+    const { mataPelajaran = 'Umum', items = [] } = req.body as {
+      mataPelajaran?: string;
+      items?: Array<{
+        id: string;
+        nomor?: number;
+        tipe: string;
+        pertanyaanHtml: string;
+        opsi: string[];
+        kunciJawaban: string[];
+        bobot?: number;
+        stats?: {
+          totalResponden?: number;
+          correctPercent?: number | null;
+          tingkatKesukaranP?: number | null;
+          dayaPembedaD?: number | null;
+        };
+      }>;
+    };
+
+    if (!Array.isArray(items) || items.length === 0) {
+      res.status(400).json({ error: 'Tidak ada butir soal untuk dianalisis.' });
+      return;
+    }
+
+    const ai = getGeminiClient();
+    if (!ai) {
+      res.status(503).json({
+        error:
+          'GEMINI_API_KEY belum terkonfigurasi di Settings > Secrets. Analisis Psikometrik & Kualitas Lokal tetap aktif gratis tanpa API key.',
+      });
+      return;
+    }
+
+    const compactItems = items.map((it, idx) => {
+      const { cleanedHtml } = tokenizeDataImages(it.pertanyaanHtml || '');
+      const cleanQuestion = stripHtmlBoilerplateForAi(cleanedHtml).slice(0, 1200);
+      return {
+        id: String(it.id),
+        nomor: it.nomor ?? idx + 1,
+        tipe: it.tipe,
+        pertanyaan: cleanQuestion,
+        opsi: Array.isArray(it.opsi) ? it.opsi : [],
+        kunciJawaban: Array.isArray(it.kunciJawaban) ? it.kunciJawaban : [],
+        ...(it.stats && (it.stats.totalResponden ?? 0) > 0 ? { statistikSiswa: it.stats } : {}),
+      };
+    });
+
+    const analyzeCacheKey = makeAiCacheKey('analyze', { mataPelajaran, compactItems });
+    const cachedAnalyze = getCachedAiResponse<{
+      reviews: Array<Record<string, string>>;
+      modelUsed: string;
+    }>(analyzeCacheKey);
+    if (cachedAnalyze) {
+      res.json({ ...cachedAnalyze, cached: true });
+      return;
+    }
+
+    const batches = chunkArray(compactItems, 10);
+    const allReviews: Array<Record<string, string>> = [];
+    let lastModelUsed = 'gemini-3.1-flash-lite';
+    let partialWarning: string | undefined;
+
+    for (let bIdx = 0; bIdx < batches.length; bIdx++) {
+      if (bIdx > 0) await sleep(150);
+      const batch = batches[bIdx];
+      const promptText = `Analisis kualitas pedagogis & validitas kunci jawaban untuk butir soal Mata Pelajaran ${mataPelajaran} (MTs/SMP) berikut.
+Jika tersedia "statistikSiswa" (persentase benar, tingkat kesukaran P, daya pembeda D), pertimbangkan temuan empiris tersebut saat menilai apakah kunci jawaban tepat atau pengecoh kurang berfungsi.
+
+Daftar Soal:
+${JSON.stringify(batch)}`;
+
+      try {
+        const { response, modelUsed } = await callGeminiWithResilience(ai, {
+          contents: promptText,
+          systemInstruction:
+            'Anda adalah pakar evaluasi pendidikan & penelaah butir soal madrasah (AKMI/HOTS). Berikan analisis ringkas, akurat secara keilmuan, jujur terhadap kunci jawaban, dan kembalikan JSON array sesuai schema.',
+          jsonSchema: QUESTION_ANALYSIS_SCHEMA,
+        });
+        lastModelUsed = modelUsed;
+        const parsed = extractBalancedJsonArray(response.text ?? '[]');
+        for (const row of parsed) {
+          if (!row || typeof row !== 'object') continue;
+          const r = row as Record<string, unknown>;
+          const id = String(r.id || '').trim();
+          if (!id) continue;
+          const rawQual = String(r.kualitas || '');
+          const kualitas = rawQual.includes('Kritis')
+            ? 'Kritis'
+            : rawQual.includes('Revisi')
+              ? 'Perlu Revisi'
+              : 'Baik';
+          const rawCog = String(r.levelKognitif || '');
+          const levelKognitif = rawCog.includes('HOTS')
+            ? 'HOTS (C4-C6)'
+            : rawCog.includes('MOTS')
+              ? 'MOTS (C3)'
+              : 'LOTS (C1-C2)';
+          const rawVal = String(r.validitasKunci || '');
+          const validitasKunci = rawVal.includes('Cek')
+            ? 'Perlu Cek'
+            : rawVal.includes('Meragukan')
+              ? 'Meragukan'
+              : 'Valid';
+          allReviews.push({
+            id,
+            kualitas,
+            levelKognitif,
+            validitasKunci,
+            catatanAnalisis: String(r.catatanAnalisis || 'Analisis selesai.').trim(),
+            saranPerbaikan: String(r.saranPerbaikan || 'Pertahankan kualitas soal.').trim(),
+          });
+        }
+      } catch (batchErr) {
+        if (allReviews.length > 0) {
+          partialWarning = `Sebagian analisis AI berhenti pada kelompok soal ke-${bIdx + 1}: ${formatGeminiErrorMessage(batchErr).message}`;
+          break;
+        }
+        throw batchErr;
+      }
+    }
+
+    const payload = {
+      reviews: allReviews,
+      modelUsed: lastModelUsed,
+      ...(partialWarning ? { warning: partialWarning } : {}),
+    };
+    if (!partialWarning && allReviews.length > 0) {
+      setCachedAiResponse(analyzeCacheKey, payload);
+    }
+    res.json(payload);
+  } catch (err) {
+    console.error('Gemini analyze-questions error:', err instanceof Error ? err.message : err);
     const { status, message } = formatGeminiErrorMessage(err);
     res.status(status).json({ error: message });
   }

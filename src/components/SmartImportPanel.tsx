@@ -18,6 +18,14 @@ import type { Question, QuestionType } from '../types/cbt';
 import { parseRichHtmlQuestions, type ParsedQuestionDraft } from '../utils/questionParser';
 import { getOptionLetter } from '../utils/examLogic';
 
+import {
+  chunkArray,
+  chunkHtmlForAi,
+  formatClientFetchError,
+  safeParseResponseJson,
+} from '../utils/aiQuestionUtils';
+import { localVerifyAndFixDrafts } from '../utils/questionAnalysis';
+
 interface SmartImportPanelProps {
   subjects: string[];
   selectedSubject: string;
@@ -37,21 +45,77 @@ interface AttachedVisionImage {
 
 type StudioMode = 'extract' | 'generate';
 
+function compressImageDataUrl(dataUrl: string, fallbackMime: string): Promise<{ mimeType: string; data: string; previewUrl: string }> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const maxDim = 1500;
+      let width = img.naturalWidth || img.width;
+      let height = img.naturalHeight || img.height;
+      if (width <= maxDim && height <= maxDim && dataUrl.length <= 450_000) {
+        const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+        resolve({
+          mimeType: match?.[1] || fallbackMime || 'image/jpeg',
+          data: match?.[2] || '',
+          previewUrl: dataUrl,
+        });
+        return;
+      }
+      const scale = Math.min(1, maxDim / Math.max(width, height));
+      width = Math.max(1, Math.round(width * scale));
+      height = Math.max(1, Math.round(height * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+        resolve({
+          mimeType: match?.[1] || fallbackMime || 'image/jpeg',
+          data: match?.[2] || '',
+          previewUrl: dataUrl,
+        });
+        return;
+      }
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, width, height);
+      ctx.drawImage(img, 0, 0, width, height);
+      const jpegUrl = canvas.toDataURL('image/jpeg', 0.78);
+      const base64 = jpegUrl.split(',')[1] || '';
+      resolve({
+        mimeType: 'image/jpeg',
+        data: base64,
+        previewUrl: jpegUrl,
+      });
+    };
+    img.onerror = () => {
+      const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+      resolve({
+        mimeType: match?.[1] || fallbackMime || 'image/png',
+        data: match?.[2] || '',
+        previewUrl: dataUrl,
+      });
+    };
+    img.src = dataUrl;
+  });
+}
+
 function fileToBase64Image(file: File): Promise<AttachedVisionImage> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       const dataUrl = String(reader.result || '');
       const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
       if (!match) {
         reject(new Error('Format gambar tidak valid.'));
         return;
       }
+      const compressed = await compressImageDataUrl(dataUrl, match[1] || file.type || 'image/png');
       resolve({
         name: file.name,
-        mimeType: match[1] || file.type || 'image/png',
-        data: match[2],
-        previewUrl: dataUrl,
+        mimeType: compressed.mimeType,
+        data: compressed.data,
+        previewUrl: compressed.previewUrl,
       });
     };
     reader.onerror = () => reject(new Error('Gagal membaca file gambar.'));
@@ -164,6 +228,7 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
   const [genSertakanTabel, setGenSertakanTabel] = useState(true);
 
   const [isParsing, setIsParsing] = useState(false);
+  const [aiProgressText, setAiProgressText] = useState<string | null>(null);
   const [enhancingAction, setEnhancingAction] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -251,45 +316,102 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
       return;
     }
     setIsParsing(true);
+    setAiProgressText(null);
     setErrorMsg(null);
     setSuccessMsg(null);
 
     try {
-      const res = await fetch('/api/gemini/parse-questions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          content,
-          images: attachedImages.map((img) => ({ mimeType: img.mimeType, data: img.data })),
-          mataPelajaran: activeSubject,
-          autoSolveMissingKeys,
-        }),
-      });
-      const data = (await res.json()) as {
-        questions?: ParsedQuestionDraft[];
-        error?: string;
-        warning?: string;
-      };
-      if (!res.ok) {
-        setErrorMsg(
-          data.error ||
-            'Gagal memanggil Smart AI Parser. Anda tetap dapat menggunakan tombol "Ekstrak Instan (Parser Lokal)".'
-        );
-      } else if (data.questions && data.questions.length > 0) {
-        setDrafts(data.questions);
+      const textChunks = content.trim() ? chunkHtmlForAi(content, 11000) : [];
+      const imageBatches = chunkArray(attachedImages, 2);
+      const requests: Array<{ content: string; images: Array<{ mimeType: string; data: string }> }> = [];
+
+      for (const tc of textChunks) {
+        requests.push({ content: tc, images: [] });
+      }
+      for (const ib of imageBatches) {
+        requests.push({
+          content: '',
+          images: ib.map((img) => ({ mimeType: img.mimeType, data: img.data })),
+        });
+      }
+      if (requests.length === 0) {
+        requests.push({ content, images: [] });
+      }
+
+      const collected: ParsedQuestionDraft[] = [];
+      let partialWarn: string | null = null;
+      let lastModel = 'gemini-3.1-flash-lite';
+
+      for (let i = 0; i < requests.length; i++) {
+        if (requests.length > 1) {
+          setAiProgressText(`Memproses bagian ${i + 1} dari ${requests.length}...`);
+        }
+        const controller = new AbortController();
+        const timer = window.setTimeout(() => controller.abort(), 52000);
+        try {
+          const res = await fetch('/api/gemini/parse-questions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: controller.signal,
+            body: JSON.stringify({
+              content: requests[i].content,
+              images: requests[i].images,
+              mataPelajaran: activeSubject,
+              autoSolveMissingKeys,
+            }),
+          });
+          const { data } = await safeParseResponseJson<{
+            questions?: ParsedQuestionDraft[];
+            modelUsed?: string;
+            error?: string;
+            warning?: string;
+          }>(res);
+
+          if (!res.ok) {
+            const msg = formatClientFetchError(null, res.status, data?.error);
+            if (collected.length > 0) {
+              partialWarn = `Sebagian selesai (${collected.length} soal). Bagian ${i + 1} terhenti: ${msg}`;
+              break;
+            }
+            setErrorMsg(msg);
+            return;
+          }
+
+          if (data?.modelUsed) lastModel = data.modelUsed;
+          if (data?.questions && data.questions.length > 0) {
+            collected.push(...data.questions);
+            setDrafts([...collected]);
+          }
+          if (data?.warning) {
+            partialWarn = data.warning;
+          }
+        } catch (chunkErr) {
+          const msg = formatClientFetchError(chunkErr);
+          if (collected.length > 0) {
+            partialWarn = `Sebagian selesai (${collected.length} soal). Bagian ${i + 1} terhenti: ${msg}`;
+            break;
+          }
+          setErrorMsg(msg);
+          return;
+        } finally {
+          window.clearTimeout(timer);
+        }
+      }
+
+      if (collected.length > 0) {
+        setDrafts(collected);
         setSuccessMsg(
-          `Smart AI berhasil mengekstrak ${data.questions.length} butir soal lengkap dengan kunci & pembahasan.`
+          `Smart AI (${lastModel} · Gratis) berhasil mengekstrak ${collected.length} butir soal lengkap dengan kunci & pembahasan.`
         );
-        if (data.warning) {
-          setErrorMsg(data.warning);
+        if (partialWarn) {
+          setErrorMsg(partialWarn);
         }
       } else {
         setErrorMsg('AI tidak menemukan butir soal pada konten atau gambar tersebut.');
       }
-    } catch {
-      setErrorMsg('Koneksi ke server AI terganggu. Silakan coba lagi atau gunakan "Ekstrak Instan (Parser Lokal)".');
     } finally {
       setIsParsing(false);
+      setAiProgressText(null);
     }
   };
 
@@ -300,13 +422,18 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
       return;
     }
     setIsParsing(true);
+    setAiProgressText('Menyusun butir soal dengan Gemini Free Tier...');
     setErrorMsg(null);
     setSuccessMsg(null);
+
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 52000);
 
     try {
       const res = await fetch('/api/gemini/generate-questions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
           topik: genTopik,
           mataPelajaran: activeSubject,
@@ -317,68 +444,124 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
           sertakanTabel: genSertakanTabel,
         }),
       });
-      const data = (await res.json()) as {
+      const { data } = await safeParseResponseJson<{
         questions?: ParsedQuestionDraft[];
+        modelUsed?: string;
         error?: string;
-      };
+      }>(res);
+
       if (!res.ok) {
-        setErrorMsg(data.error || 'Gagal membuat soal otomatis dengan AI.');
-      } else if (data.questions && data.questions.length > 0) {
+        setErrorMsg(formatClientFetchError(null, res.status, data?.error));
+      } else if (data?.questions && data.questions.length > 0) {
         setDrafts((prev) => [...prev, ...data.questions!]);
         setSuccessMsg(
-          `Smart AI berhasil membuat ${data.questions.length} soal baru untuk ${activeSubject} Kelas ${genKelas}.`
+          `Smart AI (${data.modelUsed || 'gemini-3.1-flash-lite'} · Gratis) berhasil membuat ${data.questions.length} soal baru untuk ${activeSubject} Kelas ${genKelas}.`
         );
       } else {
         setErrorMsg('AI tidak mengembalikan soal. Coba deskripsikan topik lebih spesifik.');
       }
-    } catch {
-      setErrorMsg('Gagal menghubungi server AI Generator.');
+    } catch (err) {
+      setErrorMsg(formatClientFetchError(err));
     } finally {
+      window.clearTimeout(timer);
       setIsParsing(false);
+      setAiProgressText(null);
     }
   };
 
   const handleAIEnhance = async (action: 'solve_keys' | 'upgrade_hots' | 'fix_formatting') => {
     if (drafts.length === 0) return;
     setEnhancingAction(action);
+    setAiProgressText(null);
     setErrorMsg(null);
     setSuccessMsg(null);
 
+    const batches = chunkArray(drafts, 8);
+    const enhancedCollected: ParsedQuestionDraft[] = [];
+    let partialWarn: string | null = null;
+    let lastModel = 'gemini-3.1-flash-lite';
+
     try {
-      const res = await fetch('/api/gemini/enhance-questions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          questions: drafts,
-          action,
-          mataPelajaran: activeSubject,
-        }),
-      });
-      const data = (await res.json()) as {
-        questions?: ParsedQuestionDraft[];
-        error?: string;
-        warning?: string;
-      };
-      if (!res.ok) {
-        setErrorMsg(data.error || 'Gagal menyempurnakan soal dengan AI.');
-      } else if (data.questions && data.questions.length > 0) {
-        setDrafts(data.questions);
+      for (let b = 0; b < batches.length; b++) {
+        if (batches.length > 1) {
+          setAiProgressText(`Menganalisis kelompok ${b + 1} dari ${batches.length}...`);
+        }
+        const controller = new AbortController();
+        const timer = window.setTimeout(() => controller.abort(), 52000);
+        try {
+          const res = await fetch('/api/gemini/enhance-questions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            signal: controller.signal,
+            body: JSON.stringify({
+              questions: batches[b],
+              action,
+              mataPelajaran: activeSubject,
+            }),
+          });
+          const { data } = await safeParseResponseJson<{
+            questions?: ParsedQuestionDraft[];
+            modelUsed?: string;
+            error?: string;
+            warning?: string;
+          }>(res);
+
+          if (!res.ok) {
+            const msg = formatClientFetchError(null, res.status, data?.error);
+            if (enhancedCollected.length > 0) {
+              for (let r = b; r < batches.length; r++) enhancedCollected.push(...batches[r]);
+              partialWarn = `Sebagian soal selesai disempurnakan. Kelompok ${b + 1} terhenti: ${msg}`;
+              break;
+            }
+            setErrorMsg(msg);
+            return;
+          }
+          if (data?.modelUsed) lastModel = data.modelUsed;
+          if (data?.questions && data.questions.length > 0) {
+            enhancedCollected.push(...data.questions);
+          } else {
+            enhancedCollected.push(...batches[b]);
+          }
+          if (data?.warning) partialWarn = data.warning;
+        } catch (err) {
+          const msg = formatClientFetchError(err);
+          if (enhancedCollected.length > 0) {
+            for (let r = b; r < batches.length; r++) enhancedCollected.push(...batches[r]);
+            partialWarn = `Sebagian soal selesai disempurnakan. Kelompok ${b + 1} terhenti: ${msg}`;
+            break;
+          }
+          setErrorMsg(msg);
+          return;
+        } finally {
+          window.clearTimeout(timer);
+        }
+      }
+
+      if (enhancedCollected.length > 0) {
+        setDrafts(enhancedCollected);
         const label =
           action === 'upgrade_hots'
             ? 'meningkatkan soal ke level HOTS'
             : action === 'fix_formatting'
               ? 'merapikan ejaan & format soal'
               : 'memverifikasi kunci jawaban & pembahasan';
-        setSuccessMsg(`Smart AI berhasil ${label} untuk ${data.questions.length} soal.`);
-        if (data.warning) {
-          setErrorMsg(data.warning);
-        }
+        setSuccessMsg(
+          `Smart AI (${lastModel} · Gratis) berhasil ${label} untuk ${enhancedCollected.length} soal.`
+        );
+        if (partialWarn) setErrorMsg(partialWarn);
       }
-    } catch {
-      setErrorMsg('Koneksi ke server AI terganggu saat menyempurnakan soal.');
     } finally {
       setEnhancingAction(null);
+      setAiProgressText(null);
     }
+  };
+
+  const handleLocalAnalyzeDrafts = () => {
+    if (drafts.length === 0) return;
+    setErrorMsg(null);
+    const { drafts: verified, summary } = localVerifyAndFixDrafts(drafts);
+    setDrafts(verified);
+    setSuccessMsg(summary);
   };
 
   const handleLocalParse = () => {
@@ -613,7 +796,7 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
                 )}
                 <span>
                   {isParsing
-                    ? 'AI Sedang Mengekstrak & Menganalisis...'
+                    ? aiProgressText || 'AI Sedang Mengekstrak & Menganalisis...'
                     : 'Ekstrak dengan Smart AI'}
                 </span>
               </button>
@@ -825,6 +1008,16 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
                   <Wand2 className="h-3.5 w-3.5 text-emerald-700" />
                 )}
                 <span>Rapikan Ejaan &amp; Format AI</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={Boolean(enhancingAction)}
+                onClick={handleLocalAnalyzeDrafts}
+                className="btn-press inline-flex items-center gap-1.5 rounded-xl border border-sky-300/70 bg-sky-500/10 px-3 py-1.5 text-xs font-semibold text-sky-900 hover:bg-sky-500/20 disabled:opacity-50"
+              >
+                <CheckCircle2 className="h-3.5 w-3.5 text-sky-700" />
+                <span>Analisis Struktur (Gratis Lokal)</span>
               </button>
 
               <button

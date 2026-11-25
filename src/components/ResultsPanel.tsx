@@ -23,6 +23,7 @@ import {
 } from '../utils/exportHelpers';
 import { recalculateResultWithEssayScore } from '../utils/examLogic';
 import { getViolationHistoryForResult } from '../utils/violationTracker';
+import { formatClientFetchError, safeParseResponseJson } from '../utils/aiQuestionUtils';
 
 interface ResultsPanelProps {
   results: ExamResult[];
@@ -121,6 +122,8 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({
 
     setAiGradingLoading(true);
     setAiGradingNote(null);
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 45000);
     try {
       const items = essayDetails.map((ans) => {
         const snap = relatedExam?.questionsSnapshot.find((q) => q.id === ans.questionId);
@@ -134,25 +137,27 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({
       const res = await fetch('/api/gemini/suggest-essay-score', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
           mataPelajaran: editingResult.mataPelajaran,
           items,
         }),
       });
-      const data = (await res.json()) as {
+      const { data } = await safeParseResponseJson<{
         suggestedPercent?: number;
         reason?: string;
         error?: string;
-      };
-      if (res.ok && typeof data.suggestedPercent === 'number') {
+      }>(res);
+      if (res.ok && data && typeof data.suggestedPercent === 'number') {
         setEssayScoreInput(data.suggestedPercent);
         setAiGradingNote(data.reason || 'Saran skor AI diterapkan.');
       } else {
-        setAiGradingNote(data.error || 'Gagal mendapatkan saran nilai AI.');
+        setAiGradingNote(formatClientFetchError(null, res.status, data?.error));
       }
-    } catch {
-      setAiGradingNote('Koneksi AI terganggu. Silakan isi skor manual.');
+    } catch (err) {
+      setAiGradingNote(formatClientFetchError(err));
     } finally {
+      window.clearTimeout(timer);
       setAiGradingLoading(false);
     }
   };
