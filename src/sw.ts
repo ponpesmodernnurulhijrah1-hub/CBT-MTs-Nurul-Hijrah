@@ -128,7 +128,7 @@ async function purgeOutdatedRuntimeCaches(purgeAllAppCaches = false): Promise<bo
   return hadStaleCaches;
 }
 
-function pingWindowClientVersion(client: WindowClient, timeoutMs = 850): Promise<string | null> {
+function pingWindowClientVersion(client: WindowClient, timeoutMs = 2000): Promise<string | null> {
   return new Promise((resolve) => {
     try {
       const channel = new MessageChannel();
@@ -221,7 +221,7 @@ self.addEventListener('activate', (event) => {
 
           // If a legacy installed PWA runs ancient cached JS that ignores SW_ACTIVATED,
           // it won't answer PING_CLIENT_VERSION with APP_BUILD_HASH -> force navigate to bustUrl.
-          if (client.url.includes(`_pwa_v=${APP_BUILD_HASH}`)) return;
+          if (client.url.includes('_pwa_v=')) return;
           const clientHash = await pingWindowClientVersion(client);
           if (clientHash === APP_BUILD_HASH) return;
 

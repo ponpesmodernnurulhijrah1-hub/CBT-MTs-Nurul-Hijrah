@@ -310,7 +310,11 @@ export function useLiquidSpecularGlobal(): void {
         applySpecularAndMagnet(el, e.clientX, e.clientY, profile.enableMagneticPull);
       }
 
-      if (profile.enableLiquidRipple && el.matches(RIPPLE_SELECTOR)) {
+      if (
+        profile.enableLiquidRipple &&
+        document.documentElement.dataset.particles !== 'off' &&
+        el.matches(RIPPLE_SELECTOR)
+      ) {
         spawnLiquidRipple(el, e.clientX, e.clientY, profile.rippleLimit);
       }
 

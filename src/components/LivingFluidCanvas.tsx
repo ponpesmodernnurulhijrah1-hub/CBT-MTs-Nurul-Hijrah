@@ -1,8 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import {
-  evaluateAdaptiveFpsStepDown,
-  type DevicePerfTier,
-} from '../utils/deviceViewport';
+import type { DevicePerfTier } from '../utils/deviceViewport';
 
 interface LivingFluidCanvasProps {
   zenFocus?: boolean;
@@ -124,6 +121,24 @@ function compileWebGLShader(
   return shader;
 }
 
+function isSoftwareWebGLRenderer(gl: WebGLRenderingContext): boolean {
+  try {
+    const ext = gl.getExtension('WEBGL_debug_renderer_info');
+    const renderer = String(
+      (ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)) || ''
+    ).toLowerCase();
+    return (
+      renderer.includes('swiftshader') ||
+      renderer.includes('llvmpipe') ||
+      renderer.includes('software') ||
+      renderer.includes('mesa offscreen') ||
+      renderer.includes('microsoft basic render')
+    );
+  } catch {
+    return false;
+  }
+}
+
 function readTier(): DevicePerfTier {
   if (typeof document === 'undefined') return 'high';
   const raw = document.documentElement.dataset.perfTier;
@@ -160,12 +175,6 @@ export const LivingFluidCanvas: React.FC<LivingFluidCanvasProps> = ({ zenFocus =
     let zenCurrent = zenTargetRef.current;
     let lastFrameMs = performance.now();
 
-    // Rolling FPS governor window
-    let fpsWindowStart = performance.now();
-    let fpsFrameCount = 0;
-    let lowFpsStreak = 0;
-
-    // WebGL resources (nullable — clean 2D fallback if WebGL is unavailable)
     let gl: WebGLRenderingContext | null = null;
     let program: WebGLProgram | null = null;
     let buffer: WebGLBuffer | null = null;
@@ -180,18 +189,30 @@ export const LivingFluidCanvas: React.FC<LivingFluidCanvasProps> = ({ zenFocus =
 
     const initContext = () => {
       try {
-        const createdGl =
-          (canvas.getContext('webgl', {
-            alpha: false,
-            antialias: false,
-            depth: false,
-            stencil: false,
-            powerPreference: activeTier === 'lite' ? 'low-power' : 'default',
-            preserveDrawingBuffer: false,
-          }) as WebGLRenderingContext | null) ||
-          (canvas.getContext('experimental-webgl') as WebGLRenderingContext | null);
+        const probeCanvas = document.createElement('canvas');
+        const probeGl =
+          (probeCanvas.getContext('webgl') as WebGLRenderingContext | null) ||
+          (probeCanvas.getContext('experimental-webgl') as WebGLRenderingContext | null);
+        const useHardwareWebGl = Boolean(probeGl && !isSoftwareWebGLRenderer(probeGl));
+        probeGl?.getExtension('WEBGL_lose_context')?.loseContext();
+
+        const createdGl = useHardwareWebGl
+          ? ((canvas.getContext('webgl', {
+              alpha: false,
+              antialias: false,
+              depth: false,
+              stencil: false,
+              powerPreference: activeTier === 'lite' ? 'low-power' : 'default',
+              preserveDrawingBuffer: true,
+            }) as WebGLRenderingContext | null) ||
+            (canvas.getContext('experimental-webgl', {
+              preserveDrawingBuffer: true,
+            }) as WebGLRenderingContext | null))
+          : null;
 
         if (createdGl) {
+          createdGl.clearColor(0.955, 0.972, 1.0, 1.0);
+          createdGl.clear(createdGl.COLOR_BUFFER_BIT);
           const vs = compileWebGLShader(createdGl, createdGl.VERTEX_SHADER, VERTEX_SHADER_SRC);
           const fs = compileWebGLShader(createdGl, createdGl.FRAGMENT_SHADER, FRAGMENT_SHADER_SRC);
           if (vs && fs) {
@@ -240,34 +261,22 @@ export const LivingFluidCanvas: React.FC<LivingFluidCanvasProps> = ({ zenFocus =
       ctx2d = canvas.getContext('2d', { alpha: false });
     };
 
-    const resizeCanvas = () => {
-      if (isDisposed) return;
-      const baseDpr = window.devicePixelRatio || 1;
-      const tierScale =
-        activeTier === 'high' ? Math.min(1.1, baseDpr) : activeTier === 'balanced' ? 0.45 : 0.28;
-      const width = Math.max(1, Math.round(window.innerWidth * tierScale));
-      const height = Math.max(1, Math.round(window.innerHeight * tierScale));
-      if (canvas.width !== width || canvas.height !== height) {
-        canvas.width = width;
-        canvas.height = height;
-      }
-      if (gl) {
-        gl.viewport(0, 0, width, height);
-      }
-    };
-
     const drawFrame = (dtSec: number) => {
-      zenCurrent += (zenTargetRef.current - zenCurrent) * Math.min(1, dtSec * 3.2);
-      const speedMul = 1.0 - zenCurrent * 0.82;
+      if (isDisposed) return;
+
+      const zenTarget = zenTargetRef.current;
+      zenCurrent += (zenTarget - zenCurrent) * Math.min(1, dtSec * 4.5);
+
+      const speedMul = 1 - zenCurrent * 0.62;
       simTime += dtSec * speedMul;
 
       const prevX = pointer.x;
       const prevY = pointer.y;
-      pointer.x += (pointer.targetX - pointer.x) * Math.min(1, dtSec * 7.5);
-      pointer.y += (pointer.targetY - pointer.y) * Math.min(1, dtSec * 7.5);
-      pointer.vx = pointer.vx * 0.88 + (pointer.x - prevX) * 14.0;
-      pointer.vy = pointer.vy * 0.88 + (pointer.y - prevY) * 14.0;
-      pointer.impulse = Math.max(0, pointer.impulse * Math.pow(0.22, dtSec));
+      pointer.x += (pointer.targetX - pointer.x) * Math.min(1, dtSec * 8);
+      pointer.y += (pointer.targetY - pointer.y) * Math.min(1, dtSec * 8);
+      pointer.vx = Math.max(-1.5, Math.min(1.5, (pointer.x - prevX) * 18));
+      pointer.vy = Math.max(-1.5, Math.min(1.5, (pointer.y - prevY) * 18));
+      pointer.impulse *= Math.pow(0.18, dtSec);
 
       if (gl && program) {
         gl.useProgram(program);
@@ -277,7 +286,10 @@ export const LivingFluidCanvas: React.FC<LivingFluidCanvasProps> = ({ zenFocus =
         gl.uniform2f(uVelLoc, pointer.vx, -pointer.vy);
         gl.uniform1f(uImpulseLoc, pointer.impulse);
         gl.uniform1f(uZenLoc, zenCurrent);
-        gl.uniform1f(uQualityLoc, activeTier === 'high' ? 3.0 : 2.0);
+        gl.uniform1f(
+          uQualityLoc,
+          activeTier === 'high' ? 3.0 : activeTier === 'balanced' ? 2.0 : 1.0
+        );
         gl.drawArrays(gl.TRIANGLES, 0, 3);
         return;
       }
@@ -285,40 +297,82 @@ export const LivingFluidCanvas: React.FC<LivingFluidCanvasProps> = ({ zenFocus =
       if (ctx2d) {
         const w = canvas.width;
         const h = canvas.height;
-        const grad = ctx2d.createLinearGradient(0, 0, w, h);
-        grad.addColorStop(0, zenCurrent > 0.5 ? '#eef3fa' : '#f4f8ff');
-        grad.addColorStop(0.5, zenCurrent > 0.5 ? '#e4ecf7' : '#e1efff');
-        grad.addColorStop(1, zenCurrent > 0.5 ? '#e9eef6' : '#ede8ff');
-        ctx2d.fillStyle = grad;
+        const baseGrad = ctx2d.createLinearGradient(0, 0, w, h);
+        baseGrad.addColorStop(0, '#f4f8ff');
+        baseGrad.addColorStop(0.5, '#e6f0ff');
+        baseGrad.addColorStop(1, '#efeaff');
+        ctx2d.fillStyle = baseGrad;
         ctx2d.fillRect(0, 0, w, h);
 
         const orbs = [
           {
-            x: w * (0.18 + Math.sin(simTime * 0.35) * 0.08),
-            y: h * (0.2 + Math.cos(simTime * 0.28) * 0.08),
+            cx: w * (0.28 + Math.sin(simTime * 0.28) * 0.12),
+            cy: h * (0.25 + Math.cos(simTime * 0.22) * 0.1),
+            r: Math.max(w, h) * 0.55,
+            c0: 'rgba(59, 130, 246, 0.34)',
+          },
+          {
+            cx: w * (0.74 + Math.cos(simTime * 0.24) * 0.11),
+            cy: h * (0.35 + Math.sin(simTime * 0.26) * 0.12),
+            r: Math.max(w, h) * 0.5,
+            c0: 'rgba(34, 211, 238, 0.32)',
+          },
+          {
+            cx: w * (0.55 + Math.sin(simTime * 0.2 + 1.8) * 0.14),
+            cy: h * (0.78 + Math.cos(simTime * 0.25) * 0.09),
             r: Math.max(w, h) * 0.48,
-            c: zenCurrent > 0.5 ? 'rgba(59,130,246,0.16)' : 'rgba(37,99,235,0.32)',
+            c0: 'rgba(139, 92, 246, 0.26)',
           },
           {
-            x: w * (0.82 + Math.cos(simTime * 0.31) * 0.07),
-            y: h * (0.25 + Math.sin(simTime * 0.39) * 0.07),
-            r: Math.max(w, h) * 0.44,
-            c: zenCurrent > 0.5 ? 'rgba(6,182,212,0.14)' : 'rgba(34,211,238,0.28)',
-          },
-          {
-            x: w * (pointer.x * 0.65 + 0.2),
-            y: h * (pointer.y * 0.65 + 0.2),
-            r: Math.max(w, h) * 0.42,
-            c: zenCurrent > 0.5 ? 'rgba(139,92,246,0.12)' : 'rgba(168,85,247,0.24)',
+            cx: w * pointer.x,
+            cy: h * pointer.y,
+            r: Math.max(w, h) * 0.36,
+            c0: `rgba(103, 232, 249, ${(0.16 + pointer.impulse * 0.2).toFixed(3)})`,
           },
         ];
+
         for (const orb of orbs) {
-          const g = ctx2d.createRadialGradient(orb.x, orb.y, 0, orb.x, orb.y, orb.r);
-          g.addColorStop(0, orb.c);
-          g.addColorStop(1, 'rgba(255,255,255,0)');
-          ctx2d.fillStyle = g;
+          const rad = ctx2d.createRadialGradient(orb.cx, orb.cy, 0, orb.cx, orb.cy, orb.r);
+          rad.addColorStop(0, orb.c0);
+          rad.addColorStop(1, 'rgba(255, 255, 255, 0)');
+          ctx2d.fillStyle = rad;
           ctx2d.fillRect(0, 0, w, h);
         }
+
+        if (zenCurrent > 0.01) {
+          ctx2d.fillStyle = `rgba(235, 242, 252, ${(zenCurrent * 0.55).toFixed(3)})`;
+          ctx2d.fillRect(0, 0, w, h);
+        }
+      }
+    };
+
+    const resizeCanvas = () => {
+      if (isDisposed) return;
+      const baseDpr = window.devicePixelRatio || 1;
+      const tierScale = gl
+        ? activeTier === 'high'
+          ? Math.min(1.0, baseDpr)
+          : activeTier === 'balanced'
+            ? 0.45
+            : 0.28
+        : activeTier === 'high'
+          ? 0.4
+          : activeTier === 'balanced'
+            ? 0.28
+            : 0.2;
+      const width = Math.max(1, Math.round(window.innerWidth * tierScale));
+      const height = Math.max(1, Math.round(window.innerHeight * tierScale));
+      let resized = false;
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+        resized = true;
+      }
+      if (gl) {
+        gl.viewport(0, 0, width, height);
+      }
+      if (resized) {
+        drawFrame(0.016);
       }
     };
 
@@ -334,37 +388,26 @@ export const LivingFluidCanvas: React.FC<LivingFluidCanvasProps> = ({ zenFocus =
         return;
       }
 
-      const minIntervalMs = activeTier === 'high' ? 14 : activeTier === 'balanced' ? 24 : 32;
+      const isInteractiveImpulse = pointer.impulse > 0.08;
+      const minIntervalMs = gl
+        ? activeTier === 'high'
+          ? 14
+          : activeTier === 'balanced'
+            ? 24
+            : 36
+        : activeTier === 'high'
+          ? 48
+          : activeTier === 'balanced'
+            ? 64
+            : isInteractiveImpulse
+              ? 36
+              : 120;
       const elapsedMs = now - lastFrameMs;
 
       if (elapsedMs >= minIntervalMs) {
-        const dtSec = Math.min(0.06, elapsedMs / 1000);
+        const dtSec = Math.min(0.12, elapsedMs / 1000);
         lastFrameMs = now;
         drawFrame(dtSec);
-
-        // Adaptive FPS Governor adjusts shader buffer resolution & pacing without disabling effects
-        if (activeTier !== 'lite') {
-          fpsFrameCount += 1;
-          const windowElapsed = now - fpsWindowStart;
-          if (windowElapsed >= 1600) {
-            const measuredFps = (fpsFrameCount * 1000) / windowElapsed;
-            const threshold = activeTier === 'high' ? 44 : 28;
-            if (measuredFps < threshold) {
-              lowFpsStreak += 1;
-            } else {
-              lowFpsStreak = 0;
-            }
-            const nextTier = evaluateAdaptiveFpsStepDown(activeTier, measuredFps, lowFpsStreak);
-            if (nextTier !== activeTier) {
-              activeTier = nextTier;
-              lowFpsStreak = 0;
-              document.documentElement.dataset.perfTier = nextTier;
-              resizeCanvas();
-            }
-            fpsWindowStart = now;
-            fpsFrameCount = 0;
-          }
-        }
       }
 
       rafId = window.requestAnimationFrame(tick);
@@ -378,8 +421,6 @@ export const LivingFluidCanvas: React.FC<LivingFluidCanvasProps> = ({ zenFocus =
       }
       if (rafId === null) {
         lastFrameMs = performance.now();
-        fpsWindowStart = lastFrameMs;
-        fpsFrameCount = 0;
         rafId = window.requestAnimationFrame(tick);
       }
     };

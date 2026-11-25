@@ -220,7 +220,14 @@ export function syncDocumentDeviceAttributes(): {
   const root = document.documentElement;
   root.dataset.deviceType = deviceType;
   root.dataset.displayMode = displayMode;
-  root.dataset.perfTier = perfTier;
+  const profilerLevel = root.dataset.profilerLevel;
+  const profilerTierCap: DevicePerfTier =
+    profilerLevel === 'low'
+      ? 'lite'
+      : profilerLevel === 'balanced' && perfTier === 'high'
+        ? 'balanced'
+        : perfTier;
+  root.dataset.perfTier = profilerTierCap;
   const vh = window.visualViewport?.height || window.innerHeight || 0;
   if (vh > 0) {
     root.style.setProperty('--app-dvh', `${vh}px`);

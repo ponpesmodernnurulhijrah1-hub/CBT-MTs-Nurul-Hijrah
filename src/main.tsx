@@ -26,53 +26,55 @@ if (typeof window !== 'undefined') {
     }
   }
 
-  // Register Service Worker immediately bypassing HTTP cache so installed PWAs always check for fresh releases
+  // Register Service Worker in production builds; clean up any stale dev SW in dev mode
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.addEventListener('message', (event) => {
-      if (event.data?.type === 'PING_CLIENT_VERSION' && event.ports?.[0]) {
-        event.ports[0].postMessage({
-          version: APP_VERSION,
-          buildHash: APP_BUILD_HASH,
-        });
-      }
-    });
-
-    const registerSw = () => {
-      const swUrl = import.meta.env.DEV ? '/dev-sw.js?dev-sw' : '/sw.js';
-      const swOptions: RegistrationOptions = import.meta.env.DEV
-        ? { scope: '/', type: 'module', updateViaCache: 'none' }
-        : { scope: '/', updateViaCache: 'none' };
-
-      navigator.serviceWorker
-        .register(swUrl, swOptions)
-        .then((registration) => {
-          void registration.update().catch(() => {});
-          if (registration.waiting && navigator.serviceWorker.controller) {
-            registration.waiting.postMessage({ type: 'SKIP_WAITING' });
-          }
-          registration.addEventListener('updatefound', () => {
-            const installing = registration.installing;
-            if (!installing) return;
-            const onStateChange = () => {
-              if (installing.state === 'installed' && navigator.serviceWorker.controller) {
-                installing.postMessage({ type: 'SKIP_WAITING' });
-              }
-              if (installing.state === 'activated' || installing.state === 'redundant') {
-                installing.removeEventListener('statechange', onStateChange);
-              }
-            };
-            installing.addEventListener('statechange', onStateChange);
+    if (import.meta.env.PROD) {
+      navigator.serviceWorker.addEventListener('message', (event) => {
+        if (event.data?.type === 'PING_CLIENT_VERSION' && event.ports?.[0]) {
+          event.ports[0].postMessage({
+            version: APP_VERSION,
+            buildHash: APP_BUILD_HASH,
           });
-        })
-        .catch(() => {
-          // Ignore registration errors in restricted browser contexts
-        });
-    };
+        }
+      });
 
-    if (document.readyState === 'loading') {
-      window.addEventListener('DOMContentLoaded', registerSw, { once: true });
+      const registerSw = () => {
+        navigator.serviceWorker
+          .register('/sw.js', { scope: '/', updateViaCache: 'none' })
+          .then((registration) => {
+            void registration.update().catch(() => {});
+            if (registration.waiting && navigator.serviceWorker.controller) {
+              registration.waiting.postMessage({ type: 'SKIP_WAITING' });
+            }
+            registration.addEventListener('updatefound', () => {
+              const installing = registration.installing;
+              if (!installing) return;
+              const onStateChange = () => {
+                if (installing.state === 'installed' && navigator.serviceWorker.controller) {
+                  installing.postMessage({ type: 'SKIP_WAITING' });
+                }
+                if (installing.state === 'activated' || installing.state === 'redundant') {
+                  installing.removeEventListener('statechange', onStateChange);
+                }
+              };
+              installing.addEventListener('statechange', onStateChange);
+            });
+          })
+          .catch(() => {
+            // Ignore registration errors in restricted browser contexts
+          });
+      };
+
+      if (document.readyState === 'loading') {
+        window.addEventListener('DOMContentLoaded', registerSw, { once: true });
+      } else {
+        registerSw();
+      }
     } else {
-      registerSw();
+      navigator.serviceWorker
+        .getRegistrations()
+        .then((regs) => Promise.all(regs.map((r) => r.unregister())))
+        .catch(() => {});
     }
   }
 }

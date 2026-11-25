@@ -21,6 +21,7 @@ import {
 } from './utils/updaterLogic';
 import { syncDocumentDeviceAttributes } from './utils/deviceViewport';
 import { useActiveMotionFlag, useLiquidSpecularGlobal } from './hooks/useLiquidMotion';
+import { usePerformanceProfiler } from './hooks/usePerformanceProfiler';
 import { LivingFluidCanvas } from './components/LivingFluidCanvas';
 import type { TeacherTab } from './components/TeacherTutorAssistant';
 import type { AdminTab } from './components/AdminPortal';
@@ -74,6 +75,7 @@ const ADMIN_TABS: AdminTab[] = [
 ];
 
 export default function App() {
+  usePerformanceProfiler();
   useLiquidSpecularGlobal();
   const [activeRole, setActiveRole] = useState<UserRole>('siswa');
   const portalMotion = useActiveMotionFlag(activeRole, 420);
