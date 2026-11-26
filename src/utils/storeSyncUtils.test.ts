@@ -5,13 +5,16 @@ import {
   cascadeClassRename,
   cascadeSubjectRename,
   chunkArray,
+  chunkEntriesBySizeAndCount,
   createSyncLogEntry,
   deriveSyncStatus,
   enqueuePendingMutation,
+  estimateJsonByteSize,
   filterOutPendingDeletes,
   filterSyncLogs,
   getTeacherSubjects,
   inferSyncMetadataFromLabel,
+  isPermanentFirestoreError,
   mergeAndSortSyncLogs,
   removeUndefinedFields,
   shouldSeedInitialDatabase,
@@ -367,5 +370,28 @@ test('filterSyncLogs and buildSyncLogsCsv filter by status/entity/search and esc
   assert.ok(csv.startsWith('Waktu,Status,Kategori,Aksi,Peran,Aktor,Perangkat,Koleksi,Ringkasan,Detail Perubahan,Catatan Error'));
   assert.ok(csv.includes('"Rizqi, S.Kom"'));
   assert.ok(csv.includes('Offline'));
+});
+
+test('chunkEntriesBySizeAndCount splits image-heavy documents cleanly under Firestore batch byte limits', () => {
+  const heavyPayload = 'A'.repeat(18_000);
+  const entries = Array.from({ length: 6 }, (_, i) => ({
+    id: `q_${i}`,
+    data: { pertanyaanHtml: `<img src="data:image/jpeg;base64,${heavyPayload}" />` },
+  }));
+
+  assert.ok(estimateJsonByteSize(entries[0].data) > 18_000);
+  const batches = chunkEntriesBySizeAndCount(entries, 100, 40_000);
+  assert.equal(batches.length, 3);
+  assert.deepEqual(batches.map((b) => b.length), [2, 2, 2]);
+});
+
+test('isPermanentFirestoreError identifies non-transient rejections accurately', () => {
+  assert.equal(isPermanentFirestoreError(new Error('DOC_TOO_LARGE: 1200 KB')), true);
+  assert.equal(
+    isPermanentFirestoreError({ code: 'permission-denied', message: 'Missing or insufficient permissions.' }),
+    true
+  );
+  assert.equal(isPermanentFirestoreError(new Error('Document exceeds the maximum allowed size')), true);
+  assert.equal(isPermanentFirestoreError(new Error('Network unavailable')), false);
 });
 

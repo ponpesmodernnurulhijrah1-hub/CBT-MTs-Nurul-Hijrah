@@ -147,7 +147,63 @@ export function chunkHtmlForAi(html: string, maxChunkChars = 4500): string[] {
 }
 
 /**
- * Parses JSON text from Gemini even if wrapped in markdown fences or `{ questions: [...] }`.
+ * Recovers complete JSON `{...}` objects from a truncated JSON array `[...` when AI output
+ * stops mid-stream due to output token limits.
+ */
+function salvageObjectsFromTruncatedArray(raw: string): unknown[] {
+  const arrStart = raw.indexOf('[');
+  if (arrStart === -1) return [];
+
+  const recovered: unknown[] = [];
+  let inString = false;
+  let escaped = false;
+  let objDepth = 0;
+  let objStart = -1;
+
+  for (let i = arrStart + 1; i < raw.length; i++) {
+    const ch = raw[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (ch === '{') {
+      if (objDepth === 0) objStart = i;
+      objDepth++;
+    } else if (ch === '}' && objDepth > 0) {
+      objDepth--;
+      if (objDepth === 0 && objStart !== -1) {
+        const candidate = raw.slice(objStart, i + 1);
+        try {
+          const parsed = JSON.parse(candidate) as unknown;
+          if (parsed && typeof parsed === 'object') {
+            recovered.push(parsed);
+          }
+        } catch {
+          // Skip malformed object slice
+        }
+        objStart = -1;
+      }
+    }
+  }
+
+  return recovered;
+}
+
+/**
+ * Parses JSON text from Gemini even if wrapped in markdown fences, `{ questions: [...] }`,
+ * or truncated mid-array.
  */
 export function extractBalancedJsonArray(rawText: string): unknown[] {
   const cleaned = rawText
@@ -169,7 +225,7 @@ export function extractBalancedJsonArray(rawText: string): unknown[] {
       return (direct as { questions: unknown[] }).questions;
     }
   } catch {
-    // Attempt bracket slice fallback
+    // Attempt bracket slice or truncated object salvage fallback
   }
 
   const start = cleaned.indexOf('[');
@@ -179,11 +235,11 @@ export function extractBalancedJsonArray(rawText: string): unknown[] {
       const sliced = JSON.parse(cleaned.slice(start, end + 1)) as unknown;
       if (Array.isArray(sliced)) return sliced;
     } catch {
-      return [];
+      // Fall through to object salvage
     }
   }
 
-  return [];
+  return salvageObjectsFromTruncatedArray(cleaned);
 }
 
 /**
@@ -263,18 +319,18 @@ export function formatClientFetchError(
 ): string {
   if (serverMessage && serverMessage.trim()) return serverMessage.trim();
   if (err instanceof DOMException && err.name === 'AbortError') {
-    return 'Proses AI melebihi batas waktu koneksi. Coba bagi dokumen/jumlah soal menjadi lebih kecil atau gunakan mode analisis lokal.';
+    return 'Proses AI melebihi batas waktu koneksi. Coba bagi dokumen/jumlah soal menjadi lebih kecil atau gunakan mode Deteksi Cerdas Lokal (Gratis Tanpa Limit).';
   }
   if (status === 413) {
     return 'Ukuran dokumen/gambar terlalu besar untuk sekali kirim. Kurangi resolusi atau kirim bertahap.';
   }
   if (status === 429) {
-    return 'Batas kecepatan/kuota gratis AI tercapai sementara. Tunggu beberapa detik lalu coba ulang, atau gunakan mode Analisis Lokal (Gratis).';
+    return 'Batas kecepatan/kuota gratis AI tercapai sementara. Tunggu beberapa detik lalu coba ulang, atau gunakan Deteksi Cerdas Lokal (Gratis Tanpa Limit).';
   }
   if (status === 502 || status === 503 || status === 504) {
     return 'Server AI sedang sibuk atau melebihi batas waktu sementara. Silakan coba lagi dalam beberapa detik.';
   }
-  return 'Koneksi ke server AI terganggu. Periksa jaringan atau gunakan Analisis Lokal (Gratis Tanpa Kuota).';
+  return 'Koneksi ke server AI terganggu. Periksa jaringan atau gunakan Deteksi Cerdas Lokal (Gratis Tanpa Limit).';
 }
 
 function normalizeQuestionType(rawType: unknown, opsiCount: number, rawKeys: string[]): QuestionType {
@@ -308,41 +364,65 @@ function normalizeQuestionType(rawType: unknown, opsiCount: number, rawKeys: str
 function cleanOptionText(rawOpt: unknown): string {
   return String(rawOpt || '')
     .trim()
-    .replace(/^(?:[A-E]|[1-5])[\.\)\-:]\s+/i, '')
+    .replace(/^<(?:p|div|span)[^>]*>([\s\S]*?)<\/(?:p|div|span)>$/i, '$1')
+    .trim()
+    .replace(/^(?:\(?[A-E]\)|\[[A-E]\]|(?:[A-E]|[1-5])[\.\)\-:])\s+/i, '')
     .trim();
 }
 
-function normalizeKeys(rawKeysInput: unknown, tipe: QuestionType): string[] {
-  const rawList: string[] = Array.isArray(rawKeysInput)
-    ? rawKeysInput.map((k) => String(k || '').trim()).filter(Boolean)
-    : typeof rawKeysInput === 'string' && rawKeysInput.trim()
-      ? rawKeysInput
-          .split(/[,;]+/)
+function expandKeyTokens(rawInput: unknown): string[] {
+  const rawList: string[] = Array.isArray(rawInput)
+    ? rawInput.map((k) => String(k || '').trim()).filter(Boolean)
+    : typeof rawInput === 'string' && rawInput.trim()
+      ? rawInput
+          .split(/(?:[,;/&|]|\bdan\b|\band\b)+/i)
           .map((s) => s.trim())
           .filter(Boolean)
       : [];
 
+  const expanded: string[] = [];
+  for (const token of rawList) {
+    const compactLetters = token.replace(/[\s\-()[\].:]/g, '').toUpperCase();
+    if (/^[A-E]{2,5}$/.test(compactLetters)) {
+      expanded.push(...compactLetters.split(''));
+    } else {
+      expanded.push(token);
+    }
+  }
+  return expanded;
+}
+
+function normalizeKeys(rawKeysInput: unknown, tipe: QuestionType, opsiCount: number): string[] {
+  const expanded = expandKeyTokens(rawKeysInput);
+
   if (tipe === 'BENAR_SALAH') {
-    const joined = rawList.join(' ').toLowerCase();
+    const joined = expanded.join(' ').toLowerCase();
     return [joined.includes('salah') || joined === 'false' ? 'Salah' : 'Benar'];
   }
 
   if (tipe === 'ESAI') {
-    return rawList;
+    return expanded;
   }
 
-  const letters = rawList
+  const maxIdx = Math.max(0, Math.min(4, (opsiCount > 0 ? opsiCount : 5) - 1));
+  const validRange = 'ABCDE'.slice(0, maxIdx + 1);
+
+  const letters = expanded
     .map((entry) => {
-      const m = entry.toUpperCase().match(/^([A-E])(?:[\.\)\s:]|$)/);
+      const m = entry.toUpperCase().match(/^\(?([A-E])(?:[\.\)\]:\s]|$)/);
       if (m) return m[1];
       const fallback = entry.toUpperCase().match(/\b([A-E])\b/);
       return fallback ? fallback[1] : '';
     })
-    .filter((l): l is string => /^[A-E]$/.test(l));
+    .filter((l): l is string => l.length === 1 && validRange.includes(l));
 
   const uniqueLetters = Array.from(new Set(letters));
   if (tipe === 'PG_KOMPLEKS') {
-    return uniqueLetters.length > 0 ? uniqueLetters : ['A', 'B'];
+    if (uniqueLetters.length >= 2) return uniqueLetters;
+    if (uniqueLetters.length === 1 && maxIdx >= 1) {
+      return [uniqueLetters[0], uniqueLetters[0] === 'A' ? 'B' : 'A'];
+    }
+    return maxIdx >= 1 ? ['A', 'B'] : ['A'];
   }
   return uniqueLetters.length > 0 ? [uniqueLetters[0]] : ['A'];
 }
@@ -379,15 +459,10 @@ export function normalizeAiQuestions(
       ? restoredBody
       : `<p>${restoredBody}</p>`;
 
-    const rawOpsiList = Array.isArray(obj.opsi) ? obj.opsi.map(cleanOptionText).filter(Boolean) : [];
-    const rawKeyStrings = Array.isArray(obj.kunciJawaban)
-      ? obj.kunciJawaban.map((k) => String(k || '').trim()).filter(Boolean)
-      : typeof obj.kunciJawaban === 'string'
-        ? obj.kunciJawaban
-            .split(/[,;]+/)
-            .map((s) => s.trim())
-            .filter(Boolean)
-        : [];
+    const rawOpsiList = Array.isArray(obj.opsi)
+      ? obj.opsi.map((opt) => cleanOptionText(restoreDataImages(String(opt || ''), assets))).filter(Boolean)
+      : [];
+    const rawKeyStrings = expandKeyTokens(obj.kunciJawaban);
 
     const tipe = normalizeQuestionType(obj.tipe, rawOpsiList.length, rawKeyStrings);
     const opsi =
@@ -396,7 +471,7 @@ export function normalizeAiQuestions(
         : tipe === 'ESAI'
           ? []
           : rawOpsiList;
-    const kunciJawaban = normalizeKeys(obj.kunciJawaban, tipe);
+    const kunciJawaban = normalizeKeys(obj.kunciJawaban, tipe, opsi.length);
     const bobotNum = Number(obj.bobot);
     const bobot =
       Number.isFinite(bobotNum) && bobotNum > 0

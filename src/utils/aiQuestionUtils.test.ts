@@ -141,3 +141,43 @@ test('normalizeAiQuestions strips option prefixes, normalizes keys, and restores
   assert.deepEqual(normalized[2].opsi, ['Benar', 'Salah']);
   assert.deepEqual(normalized[2].kunciJawaban, ['Benar']);
 });
+
+test('extractBalancedJsonArray salvages complete objects from truncated JSON array responses', () => {
+  const truncated = `[
+    {"tipe":"PG","pertanyaanHtml":"<p>1 + 1 = ?</p>","opsi":["1","2","3","4"],"kunciJawaban":["B"]},
+    {"tipe":"ESAI","pertanyaanHtml":"<p>Jelaskan mad thabi'i!</p>","opsi":[],"kunciJawaban":["Panjang 2 harakat"]},
+    {"tipe":"PG","pertanyaanHtml":"<p>Potongan tidak selesai`;
+
+  const salvaged = extractBalancedJsonArray(truncated);
+  assert.equal(salvaged.length, 2);
+  const normalized = normalizeAiQuestions(salvaged);
+  assert.equal(normalized.length, 2);
+  assert.deepEqual(normalized[0].kunciJawaban, ['B']);
+  assert.equal(normalized[1].tipe, 'ESAI');
+});
+
+test('normalizeAiQuestions restores images inside options, handles dan/compact keys, and clamps invalid key letters', () => {
+  const raw = [
+    {
+      tipe: 'PG',
+      pertanyaanHtml: '<p>Pilih grafik sinus:</p>',
+      opsi: ['(A) <img src="__CBT_IMG_0__">', 'B. Salah 1', 'C. Salah 2', 'D. Salah 3'],
+      kunciJawaban: ['E'], // out of range for 4 options -> should clamp safely to ['A']
+    },
+    {
+      tipe: 'PG_KOMPLEKS',
+      pertanyaanHtml: '<p>Pilih 2 bilangan prima:</p>',
+      opsi: ['2', '4', '5', '9'],
+      kunciJawaban: 'A dan C',
+    },
+  ];
+
+  const normalized = normalizeAiQuestions(raw, {
+    __CBT_IMG_0__: 'data:image/png;base64,GRAPH1',
+  });
+  assert.equal(normalized.length, 2);
+  assert.ok(normalized[0].opsi[0].includes('data:image/png;base64,GRAPH1'));
+  assert.ok(!normalized[0].opsi[0].startsWith('(A)'));
+  assert.deepEqual(normalized[0].kunciJawaban, ['A']);
+  assert.deepEqual(normalized[1].kunciJawaban, ['A', 'C']);
+});

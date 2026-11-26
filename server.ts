@@ -106,40 +106,49 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function formatGeminiErrorMessage(err: unknown): { status: number; message: string } {
+function formatGeminiErrorMessage(err: unknown): {
+  status: number;
+  code: string;
+  message: string;
+} {
   const rawMsg = err instanceof Error ? err.message : String(err || '');
   const upper = rawMsg.toUpperCase();
 
   if (upper.includes('API_KEY_INVALID') || upper.includes('PERMISSION_DENIED') || upper.includes('403')) {
     return {
       status: 403,
+      code: 'API_KEY_INVALID',
       message:
-        'API key Gemini tidak valid atau belum memiliki izin. Periksa GEMINI_API_KEY di panel Settings > Secrets.',
+        'API key Gemini tidak valid atau belum memiliki izin. Periksa GEMINI_API_KEY di panel Settings > Secrets, atau gunakan Deteksi Cerdas Lokal (Gratis Tanpa Limit).',
     };
   }
   if (upper.includes('PERDAY') || upper.includes('GENERATEREQUESTSPERDAY') || upper.includes('PER DAY')) {
     return {
       status: 429,
+      code: 'DAILY_QUOTA_EXHAUSTED',
       message:
-        'Kuota permintaan harian AI pada API key gratis telah tercapai. Gunakan "Ekstrak Instan (Parser Lokal)" untuk dokumen Word/teks, atau tingkatkan API key di Settings > Secrets.',
+        'Kuota permintaan harian AI gratis di server sedang penuh. Untuk teks/Word Anda bisa langsung memakai Deteksi Cerdas Lokal (Gratis Tanpa Limit).',
     };
   }
   if (upper.includes('RESOURCE_EXHAUSTED') || upper.includes('429')) {
     return {
       status: 429,
-      message: 'Kuota permintaan AI sedang penuh sesaat. Tunggu beberapa detik lalu coba lagi.',
+      code: 'RATE_LIMIT',
+      message: 'Permintaan AI terlalu padat sesaat. Tunggu beberapa detik lalu coba ulang, atau gunakan Deteksi Cerdas Lokal (Gratis Tanpa Limit).',
     };
   }
   if (upper.includes('TIMEOUT') || upper.includes('DEADLINE_EXCEEDED')) {
     return {
       status: 504,
+      code: 'TIMEOUT',
       message:
-        'Proses AI melebihi batas waktu karena dokumen terlalu padat/kompleks. Coba unggah sebagian halaman atau gunakan "Ekstrak Instan (Parser Lokal)".',
+        'Proses AI melebihi batas waktu karena dokumen terlalu padat/kompleks. Coba unggah sebagian halaman atau gunakan Deteksi Cerdas Lokal (Gratis Tanpa Limit).',
     };
   }
   if (upper.includes('UNAVAILABLE') || upper.includes('503') || upper.includes('HIGH DEMAND')) {
     return {
       status: 503,
+      code: 'UNAVAILABLE',
       message:
         'Server AI Gemini sedang mengalami lonjakan trafik sementara. Silakan klik ulang dalam beberapa detik.',
     };
@@ -147,11 +156,13 @@ function formatGeminiErrorMessage(err: unknown): { status: number; message: stri
   if (upper.includes('NOT_FOUND') || upper.includes('404')) {
     return {
       status: 502,
+      code: 'MODEL_NOT_FOUND',
       message: 'Model AI yang diminta tidak tersedia. Hubungi administrator server.',
     };
   }
   return {
     status: 500,
+    code: 'INTERNAL_ERROR',
     message: rawMsg || 'Gagal menghubungi layanan Gemini AI.',
   };
 }
@@ -249,13 +260,13 @@ async function callGeminiWithResilience(ai: GoogleGenAI, opts: ResilienceCallOpt
   const litePlan = {
     model: 'gemini-3.1-flash-lite',
     retries: 1,
-    timeoutMs: 32000,
-    thinkingLevel: ThinkingLevel.MINIMAL,
+    timeoutMs: 36000,
+    thinkingLevel: ThinkingLevel.LOW,
   };
   const hydrogenPlan = {
     model: 'gemini-4-hydrogen',
     retries: 0,
-    timeoutMs: 35000,
+    timeoutMs: 38000,
     thinkingLevel: ThinkingLevel.LOW,
   };
 
@@ -313,14 +324,21 @@ async function callGeminiWithResilience(ai: GoogleGenAI, opts: ResilienceCallOpt
           upperErr.includes('RESOURCE_EXHAUSTED') || upperErr.includes('429');
 
         if (isQuotaExhausted) {
-          modelBackoffUntilMs[plan.model] = Date.now() + parseGeminiRetryDelayMs(err);
+          const isDaily =
+            upperErr.includes('PERDAY') ||
+            upperErr.includes('GENERATEREQUESTSPERDAY') ||
+            upperErr.includes('PER DAY');
+          const parsedDelay = parseGeminiRetryDelayMs(err);
+          const effectiveBackoff = isDaily ? parsedDelay : Math.min(parsedDelay, 12_000);
+          modelBackoffUntilMs[plan.model] = Date.now() + effectiveBackoff;
+
+          if (!isDaily && attempt < plan.retries && effectiveBackoff <= 12_000) {
+            await sleep(Math.min(2500, Math.max(1000, effectiveBackoff / 4)));
+            continue;
+          }
           if (hasNextModel) {
             console.info(`[Gemini] ${plan.model} kuota terbatas, beralih ke model cadangan.`);
             break;
-          }
-          if (attempt < plan.retries) {
-            await sleep(1200);
-            continue;
           }
           break;
         }
@@ -459,17 +477,31 @@ app.get('/api/version-stream', (req, res) => {
   });
 });
 
+app.get('/api/gemini/status', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  const apiKey = process.env.GEMINI_API_KEY;
+  const configured = Boolean(apiKey && apiKey !== 'MY_GEMINI_API_KEY');
+  const now = Date.now();
+  res.json({
+    configured,
+    liteReady: configured && now >= (modelBackoffUntilMs['gemini-3.1-flash-lite'] || 0),
+    hydrogenReady: configured && now >= (modelBackoffUntilMs['gemini-4-hydrogen'] || 0),
+  });
+});
+
 // Server-side Smart AI Multimodal Question Parser (HTML/Word/PDF/Images + Chunking + Auto-Solve)
 app.post('/api/gemini/parse-questions', async (req, res) => {
   try {
     const {
       content = '',
       images = [],
+      assets: clientAssets = {},
       mataPelajaran = 'Umum',
       autoSolveMissingKeys = true,
     } = req.body as {
       content?: string;
       images?: Array<{ mimeType: string; data: string }>;
+      assets?: Record<string, string>;
       mataPelajaran?: string;
       autoSolveMissingKeys?: boolean;
     };
@@ -492,32 +524,43 @@ app.post('/api/gemini/parse-questions', async (req, res) => {
     const ai = getGeminiClient();
     if (!ai) {
       res.status(503).json({
+        code: 'API_KEY_MISSING',
         error:
-          'GEMINI_API_KEY belum terkonfigurasi di Settings > Secrets. Anda dapat menggunakan "Ekstrak Instan (Parser Lokal)" untuk file teks/Word.',
+          'GEMINI_API_KEY belum terkonfigurasi di Settings > Secrets. Untuk teks/Word gunakan "Deteksi Cerdas Lokal (Gratis Tanpa Limit)".',
       });
       return;
     }
 
-    const { cleanedHtml, assets } = tokenizeDataImages(content);
+    const { cleanedHtml, assets: tokenizedAssets } = tokenizeDataImages(content);
+    const mergedAssets: Record<string, string> = {
+      ...(clientAssets && typeof clientAssets === 'object' ? clientAssets : {}),
+      ...tokenizedAssets,
+    };
     const compactHtml = stripHtmlBoilerplateForAi(cleanedHtml);
 
     const cacheKey = makeAiCacheKey('parse', {
       compactHtml,
+      assetKeys: Object.keys(mergedAssets),
       imageHashes: validImages.map((img) => `${img.mimeType}:${img.data.length}:${img.data.slice(0, 64)}`),
       mataPelajaran,
       autoSolveMissingKeys,
     });
     const cachedParse = getCachedAiResponse<{ questions: ParsedQuestionDraft[]; modelUsed: string; chunksProcessed: number }>(cacheKey);
     if (cachedParse) {
-      res.json({ ...cachedParse, cached: true });
+      res.json({
+        ...cachedParse,
+        questions: normalizeAiQuestions(cachedParse.questions, mergedAssets),
+        cached: true,
+      });
       return;
     }
 
-    const chunks = compactHtml ? chunkHtmlForAi(compactHtml, 7500) : [];
+    const chunks = compactHtml ? chunkHtmlForAi(compactHtml, 10500) : [];
     const systemInstruction =
       'Anda adalah pakar asesmen dan ekstraktor soal CBT madrasah MTs Nurul Hijrah yang sangat cerdas dan teliti. ' +
-      'Selalu jaga keutuhan HTML tabel (<table>, <thead>, <tbody>, <tr>, <th>, <td>), tag gambar (<img src="__CBT_IMG_...">), pemformatan <b>/<strong>/<i>/<sub>/<sup>, serta aksara Arab atau simbol matematika. ' +
-      'Pastikan opsi jawaban BERSIH tanpa huruf awalan A./B./C., deteksi tipe soal secara presisi (PG, PG_KOMPLEKS, BENAR_SALAH, ESAI), dan jangan pernah menggabungkan dua nomor soal berbeda.';
+      'Anda paham struktur dokumen Word (<ol>/<li> bernomor, nested list <ol type="a"> untuk opsi, daftar bernomor 1./2./3. DI DALAM badan soal sebelum opsi, tabel tata letak 2 kolom berisi opsi A-E, maupun opsi sebaris A. ... B. ... C. ... D. ...), teks bacaan stimulus lintas nomor, serta bagian Kunci Jawaban di akhir dokumen. ' +
+      'Selalu jaga keutuhan HTML tabel DATA (<table>, <thead>, <tbody>, <tr>, <th>, <td>), tag gambar (<img src="__CBT_IMG_...">), pemformatan <b>/<strong>/<i>/<sub>/<sup>, serta aksara Arab atau simbol matematika. ' +
+      'Opsi jawaban WAJIB bersih tanpa awalan A./B./C. dan berurutan A=opsi[0], B=opsi[1], C=opsi[2], D=opsi[3], E=opsi[4]. Pastikan huruf pada kunciJawaban PERSIS menunjuk indeks jawaban yang benar.';
 
     const allExtracted: ParsedQuestionDraft[] = [];
     let primaryModelUsed = 'gemini-3.1-flash-lite';
@@ -532,18 +575,20 @@ app.post('/api/gemini/parse-questions', async (req, res) => {
         const promptText = `Ekstrak seluruh butir soal ujian madrasah (Mata Pelajaran: ${mataPelajaran}, Bagian ${i + 1} dari ${chunks.length}) dari konten sumber berikut.
 
 Aturan wajib:
-1. Pertahankan seluruh tag HTML tabel (<table>...</table>), gambar (<img src="__CBT_IMG_...">), bacaan stimulus, aksara Arab, serta <sub>/<sup> di dalam pertanyaanHtml! JANGAN ubah placeholder __CBT_IMG_N__.
-2. Klasifikasikan tipe secara akurat:
-   - "PG": Pilihan Ganda 1 jawaban benar (opsi A–D/E).
+1. Pertahankan seluruh tag HTML tabel data (<table>...</table>), gambar (<img src="__CBT_IMG_...">), bacaan stimulus, daftar pernyataan bernomor di dalam badan soal, aksara Arab, serta <sub>/<sup> di dalam pertanyaanHtml! JANGAN ubah placeholder __CBT_IMG_N__.
+2. Jika dokumen memiliki daftar <ol>/<li>, nested list <ol type="a">, opsi sebaris ("A. ... B. ... C. ... D. ..."), atau tabel 2 kolom khusus opsi, susun rapi ke array opsi (tanpa huruf awalan A./B./C.) dan hapus opsi dari pertanyaanHtml.
+3. Jika dokumen memiliki bagian "Kunci Jawaban" di akhir, cocokkan ke nomor soal yang sesuai dan JANGAN masukkan bagian Kunci Jawaban sebagai soal esai!
+4. Klasifikasikan tipe secara akurat:
+   - "PG": Pilihan Ganda 1 jawaban benar (opsi[0]=A, opsi[1]=B, opsi[2]=C, opsi[3]=D, dst).
    - "PG_KOMPLEKS": Pilihan Ganda Kompleks dengan >1 jawaban benar.
    - "BENAR_SALAH": Soal pernyataan Benar / Salah (opsi ["Benar", "Salah"]).
    - "ESAI": Soal uraian / isian terbuka.
-3. ${
+5. ${
           autoSolveMissingKeys
-            ? 'Ekstrak kunci jawaban jika tertulis; JIKA dokumen tidak mencantumkan kunci jawaban, analisis soalnya secara cerdas dan isikan kunciJawaban paling akurat beserta pembahasan singkat (1 kalimat)!'
-            : 'Ekstrak kunci jawaban sesuai teks sumber (default ["A"] jika PG tanpa kunci).'
+            ? 'Ekstrak kunci jawaban jika tertulis dan verifikasi posisinya (A=opsi[0], B=opsi[1], dst); JIKA dokumen tidak mencantumkan kunci jawaban, analisis soalnya secara cerdas dan isikan kunciJawaban (huruf indeks yang tepat) beserta pembahasan singkat 1 kalimat!'
+            : 'Ekstrak kunci jawaban sesuai teks sumber (pastikan huruf kunci cocok tepat dengan indeks opsi: A=opsi[0], B=opsi[1], dst).'
         }
-4. Isikan tingkat kesulitan ("Mudah" | "Sedang" | "Sulit") dan pembahasan 1 kalimat ringkas.
+6. Isikan tingkat kesulitan ("Mudah" | "Sedang" | "Sulit") dan pembahasan 1 kalimat ringkas.
 
 Konten Sumber:
 ${chunkText}`;
@@ -556,7 +601,7 @@ ${chunkText}`;
           });
           primaryModelUsed = modelUsed;
           const parsedRaw = extractBalancedJsonArray(response.text ?? '[]');
-          allExtracted.push(...normalizeAiQuestions(parsedRaw, assets));
+          allExtracted.push(...normalizeAiQuestions(parsedRaw, mergedAssets));
         } catch (chunkErr) {
           if (allExtracted.length > 0) {
             partialWarning = `Sebagian dokumen berhenti di bagian ${i + 1}/${chunks.length}: ${formatGeminiErrorMessage(chunkErr).message}`;
@@ -586,10 +631,10 @@ ${chunkText}`;
 Aturan:
 1. Jika terdapat tabel pada gambar, rekonstruksi menjadi tag HTML <table><thead>...<tbody>...</table> yang rapi di dalam pertanyaanHtml.
 2. Pertahankan aksara Arab, rumus, pangkat (<sup>/<sub>), dan tanda baca secara akurat.
-3. Pisahkan setiap nomor soal, bersihkan opsi dari prefix A./B./C., deteksi tipe (PG, PG_KOMPLEKS, BENAR_SALAH, ESAI).
+3. Pisahkan setiap nomor soal, bersihkan opsi dari prefix A./B./C. (A=opsi[0], B=opsi[1], dst), deteksi tipe (PG, PG_KOMPLEKS, BENAR_SALAH, ESAI).
 4. ${
                 autoSolveMissingKeys
-                  ? 'Jika kunci jawaban tidak tertulis pada gambar, kerjakan soal secara teliti untuk mengisi kunciJawaban terbaik beserta pembahasan 1 kalimat dan tingkat kesulitan.'
+                  ? 'Jika kunci jawaban tidak tertulis pada gambar, kerjakan soal secara teliti untuk mengisi kunciJawaban terbaik (huruf indeks yang tepat) beserta pembahasan 1 kalimat dan tingkat kesulitan.'
                   : 'Ekstrak kunci jawaban jika tertera pada gambar.'
               }`,
             },
@@ -604,7 +649,7 @@ Aturan:
           });
           primaryModelUsed = modelUsed;
           const parsedRaw = extractBalancedJsonArray(response.text ?? '[]');
-          allExtracted.push(...normalizeAiQuestions(parsedRaw, assets));
+          allExtracted.push(...normalizeAiQuestions(parsedRaw, mergedAssets));
         } catch (visionErr) {
           if (allExtracted.length > 0) {
             partialWarning = `Ekstraksi gambar berhenti di halaman ${i + 1}: ${formatGeminiErrorMessage(visionErr).message}`;
@@ -615,20 +660,36 @@ Aturan:
       }
     }
 
-    const responsePayload = {
+    // Store tokenized placeholder form in cache when assets came from client so cache stays light & reusable
+    const cacheQuestions =
+      Object.keys(clientAssets || {}).length > 0
+        ? allExtracted.map((q) => {
+            let html = q.pertanyaanHtml;
+            for (const [tok, uri] of Object.entries(mergedAssets)) {
+              html = html.split(uri).join(tok);
+            }
+            return { ...q, pertanyaanHtml: html };
+          })
+        : allExtracted;
+
+    if (!partialWarning && cacheQuestions.length > 0) {
+      setCachedAiResponse(cacheKey, {
+        questions: cacheQuestions,
+        modelUsed: primaryModelUsed,
+        chunksProcessed: totalBatches,
+      });
+    }
+
+    res.json({
       questions: allExtracted,
       modelUsed: primaryModelUsed,
       chunksProcessed: totalBatches,
       ...(partialWarning ? { warning: partialWarning } : {}),
-    };
-    if (!partialWarning && allExtracted.length > 0) {
-      setCachedAiResponse(cacheKey, responsePayload);
-    }
-    res.json(responsePayload);
+    });
   } catch (err) {
     console.error('Gemini parse-questions error:', err instanceof Error ? err.message : err);
-    const { status, message } = formatGeminiErrorMessage(err);
-    res.status(status).json({ error: message });
+    const { status, code, message } = formatGeminiErrorMessage(err);
+    res.status(status).json({ error: message, code });
   }
 });
 

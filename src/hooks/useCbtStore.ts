@@ -43,16 +43,20 @@ import {
   createExamWithSnapshot,
 } from '../utils/examLogic';
 import {
+  FIRESTORE_SAFE_DOC_MAX_BYTES,
   MAX_SYNC_LOGS,
   cascadeClassRename,
   cascadeSubjectRename,
   chunkArray,
+  chunkEntriesBySizeAndCount,
   createSyncLogEntry,
   deriveSyncStatus,
   enqueuePendingMutation,
+  estimateJsonByteSize,
   filterOutPendingDeletes,
   getTeacherSubjects,
   inferSyncMetadataFromLabel,
+  isPermanentFirestoreError,
   mergeAndSortSyncLogs,
   removeUndefinedFields,
   shouldSeedInitialDatabase,
@@ -389,19 +393,34 @@ async function commitFirestoreSetChunks<T extends Record<string, unknown>>(
   entries: Array<{ id: string; data: T }>
 ): Promise<void> {
   if (entries.length === 0) return;
-  const chunks = chunkArray(entries);
+
+  const cleanedEntries = entries.map((entry, idx) => {
+    const cleaned = removeUndefinedFields(entry.data);
+    const docBytes = estimateJsonByteSize(cleaned);
+    if (docBytes > FIRESTORE_SAFE_DOC_MAX_BYTES) {
+      const kb = Math.round(docBytes / 1024);
+      throw new Error(
+        `DOC_TOO_LARGE: Ukuran soal ke-${idx + 1} (${kb} KB) melebihi batas maksimal 950 KB per dokumen Firestore. Kompres atau kurangi ukuran gambar pada soal tersebut.`
+      );
+    }
+    return { id: entry.id, data: cleaned };
+  });
+
+  const chunks = chunkEntriesBySizeAndCount(cleanedEntries, 100);
   for (const chunk of chunks) {
     try {
       const batch = writeBatch(db);
       for (const entry of chunk) {
-        batch.set(doc(db, colName, entry.id), removeUndefinedFields(entry.data));
+        batch.set(doc(db, colName, entry.id), entry.data);
       }
       await batch.commit();
     } catch (batchErr) {
-      for (const entry of chunk) {
-        await setDoc(doc(db, colName, entry.id), removeUndefinedFields(entry.data));
+      if (isPermanentFirestoreError(batchErr)) {
+        throw batchErr;
       }
-      if (chunk.length === 0) throw batchErr;
+      for (const entry of chunk) {
+        await setDoc(doc(db, colName, entry.id), entry.data);
+      }
     }
   }
 }
@@ -669,7 +688,18 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
     try {
       while (pendingQueueRef.current.length > 0) {
         const nextOp = pendingQueueRef.current[0];
-        await executeSingleMutation(nextOp);
+        try {
+          await executeSingleMutation(nextOp);
+        } catch (opErr) {
+          if (isPermanentFirestoreError(opErr)) {
+            // Drop permanently invalid/oversized queued mutations so healthy future saves never stall
+            pendingQueueRef.current = pendingQueueRef.current.slice(1);
+            savePendingQueue(pendingQueueRef.current);
+            setQueuedMutationsCount(pendingQueueRef.current.length);
+            continue;
+          }
+          throw opErr;
+        }
         flushedLabels.push(nextOp.label);
         flushedCols.add(nextOp.colName);
         pendingQueueRef.current = pendingQueueRef.current.slice(1);
@@ -719,8 +749,12 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
   }, [broadcastSyncMeta, recordSyncLog]);
 
   const runSyncedMutations = useCallback(
-    async (label: string, ops: PendingSyncMutation[]) => {
-      if (ops.length === 0) return;
+    async (
+      label: string,
+      ops: PendingSyncMutation[],
+      ackTimeoutMs: number = 3500
+    ): Promise<{ syncedToCloud: boolean; queued: boolean; errorMessage?: string }> => {
+      if (ops.length === 0) return { syncedToCloud: true, queued: false };
       const logId = `slog_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
       const cols = Array.from(new Set(ops.map((o) => o.colName))).join(',');
       const details = describeMutationDetails(ops);
@@ -737,7 +771,7 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
           details: `${details} · Masuk antrean offline lokal`,
           collection: cols,
         });
-        return;
+        return { syncedToCloud: false, queued: true };
       }
 
       setActiveWritesCount((c) => c + 1);
@@ -749,7 +783,7 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
           await executeSingleMutation(ops[completedIdx]);
         }
 
-        const acked = await waitForCloudAck(3500);
+        const acked = await waitForCloudAck(ackTimeoutMs);
         const nowIso = new Date().toISOString();
         setLastSyncedAt(nowIso);
         setLastSyncSummary(label);
@@ -770,9 +804,13 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
           collection: cols,
           publishPulse: acked,
         });
+        return { syncedToCloud: acked, queued: false };
       } catch (err) {
-        for (let i = completedIdx; i < ops.length; i++) {
-          enqueueAndSaveMutation(ops[i]);
+        const permanent = isPermanentFirestoreError(err);
+        if (!permanent) {
+          for (let i = completedIdx; i < ops.length; i++) {
+            enqueueAndSaveMutation(ops[i]);
+          }
         }
         const rawMsg = err instanceof Error ? err.message : String(err || '');
         if (typeof navigator !== 'undefined' && !navigator.onLine) {
@@ -785,18 +823,19 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
             details: `${details} · Koneksi terputus, disimpan ke antrean`,
             collection: cols,
           });
-        } else {
-          const msg = rawMsg || 'Koneksi ke database pusat terganggu, mencoba ulang otomatis';
-          setSyncError(msg);
-          recordSyncLog({
-            id: logId,
-            status: 'Gagal',
-            summary: label,
-            details,
-            collection: cols,
-            errorMessage: msg,
-          });
+          return { syncedToCloud: false, queued: true };
         }
+        const msg = rawMsg || 'Koneksi ke database pusat terganggu, mencoba ulang otomatis';
+        setSyncError(msg);
+        recordSyncLog({
+          id: logId,
+          status: 'Gagal',
+          summary: label,
+          details,
+          collection: cols,
+          errorMessage: msg,
+        });
+        return { syncedToCloud: false, queued: !permanent, errorMessage: msg };
       } finally {
         setActiveWritesCount((c) => Math.max(0, c - 1));
       }
@@ -2245,28 +2284,51 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
 
   const addQuestionsBatch = useCallback(
     async (items: Array<Omit<Question, 'id' | 'createdAt'>>) => {
-      if (items.length === 0) return [];
+      if (items.length === 0) {
+        return { created: [] as Question[], syncedToCloud: true, queued: false };
+      }
       const now = new Date().toISOString();
       const created: Question[] = items.map((q, idx) => ({
         ...q,
         id: `q_${Date.now()}_${idx}_${Math.random().toString(36).slice(2, 5)}`,
         createdAt: now,
       }));
+      const createdIds = new Set(created.map((c) => c.id));
       updateAndBroadcast((prev) => ({ ...prev, questions: [...prev.questions, ...created] }));
-      await runSyncedMutations(`${created.length} soal ditambahkan ke Bank Soal`, [
-        {
-          opId: `op_${Date.now()}_q_batch_add`,
-          type: 'set_batch',
-          colName: 'questions',
-          entries: created.map((item) => ({
-            id: item.id,
-            data: item as unknown as Record<string, unknown>,
-          })),
-          label: `Simpan ${created.length} soal`,
-          createdAt: Date.now(),
-        },
-      ]);
-      return created;
+
+      const syncResult = await runSyncedMutations(
+        `${created.length} soal ditambahkan ke Bank Soal`,
+        [
+          {
+            opId: `op_${Date.now()}_q_batch_add`,
+            type: 'set_batch',
+            colName: 'questions',
+            entries: created.map((item) => ({
+              id: item.id,
+              data: item as unknown as Record<string, unknown>,
+            })),
+            label: `Simpan ${created.length} soal`,
+            createdAt: Date.now(),
+          },
+        ],
+        7500
+      );
+
+      if (!syncResult.syncedToCloud && !syncResult.queued && syncResult.errorMessage) {
+        // Roll back optimistically added items if Firestore permanently rejected the write
+        updateAndBroadcast((prev) => ({
+          ...prev,
+          questions: prev.questions.filter((q) => !createdIds.has(q.id)),
+        }));
+        throw new Error(syncResult.errorMessage);
+      }
+
+      return {
+        created,
+        syncedToCloud: syncResult.syncedToCloud,
+        queued: syncResult.queued,
+        errorMessage: syncResult.errorMessage,
+      };
     },
     [runSyncedMutations, updateAndBroadcast]
   );

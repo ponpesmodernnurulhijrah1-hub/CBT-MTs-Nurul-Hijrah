@@ -1,5 +1,80 @@
 export const PENDING_DELETE_TTL_MS = 15_000;
 export const FIRESTORE_BATCH_LIMIT = 400;
+export const FIRESTORE_SAFE_BATCH_MAX_BYTES = 2_500_000; // Stay safely under Firestore 10 MiB WriteBatch RPC limit
+export const FIRESTORE_SAFE_DOC_MAX_BYTES = 950_000; // Stay safely under Firestore 1 MiB single document limit
+
+/**
+ * Estimates UTF-8 JSON byte payload size for Firestore documents and batches.
+ */
+export function estimateJsonByteSize(value: unknown): number {
+  const json = JSON.stringify(value ?? null) || '';
+  if (typeof TextEncoder !== 'undefined') {
+    return new TextEncoder().encode(json).length;
+  }
+  return Buffer.byteLength(json, 'utf8');
+}
+
+/**
+ * Splits Firestore write entries by BOTH operation count (<= maxOps) AND serialized byte size
+ * (<= maxBytes), preventing batch failures when importing questions with embedded images.
+ */
+export function chunkEntriesBySizeAndCount<T>(
+  entries: Array<{ id: string; data: T }>,
+  maxOps: number = 100,
+  maxBytes: number = FIRESTORE_SAFE_BATCH_MAX_BYTES
+): Array<Array<{ id: string; data: T }>> {
+  if (!Array.isArray(entries) || entries.length === 0) return [];
+  const safeMaxOps = Math.max(1, Math.floor(maxOps));
+  const safeMaxBytes = Math.max(10_000, Math.floor(maxBytes));
+
+  const chunks: Array<Array<{ id: string; data: T }>> = [];
+  let current: Array<{ id: string; data: T }> = [];
+  let currentBytes = 0;
+
+  for (const entry of entries) {
+    const entryBytes = estimateJsonByteSize(entry.data) + estimateJsonByteSize(entry.id) + 128;
+    const wouldExceedOps = current.length >= safeMaxOps;
+    const wouldExceedBytes = current.length > 0 && currentBytes + entryBytes > safeMaxBytes;
+
+    if (wouldExceedOps || wouldExceedBytes) {
+      chunks.push(current);
+      current = [];
+      currentBytes = 0;
+    }
+
+    current.push(entry);
+    currentBytes += entryBytes;
+  }
+
+  if (current.length > 0) {
+    chunks.push(current);
+  }
+  return chunks;
+}
+
+/**
+ * Detects non-transient Firestore rejections (oversized doc, invalid schema, permission denied)
+ * that should NOT be retried indefinitely in the offline queue.
+ */
+export function isPermanentFirestoreError(err: unknown): boolean {
+  const code =
+    err && typeof err === 'object' && 'code' in err
+      ? String((err as { code?: unknown }).code || '').toLowerCase()
+      : '';
+  const msg = (err instanceof Error ? err.message : String(err || '')).toLowerCase();
+
+  return (
+    msg.includes('doc_too_large') ||
+    code.includes('invalid-argument') ||
+    code.includes('permission-denied') ||
+    code.includes('unauthenticated') ||
+    msg.includes('exceeds the maximum allowed size') ||
+    msg.includes('maximum size') ||
+    msg.includes('entity too large') ||
+    msg.includes('permission_denied') ||
+    msg.includes('missing or insufficient permissions')
+  );
+}
 
 /**
  * Recursively strips `undefined` properties and array holes without JSON double-serialization,

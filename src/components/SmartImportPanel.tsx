@@ -22,7 +22,10 @@ import {
   chunkArray,
   chunkHtmlForAi,
   formatClientFetchError,
+  restoreDataImages,
   safeParseResponseJson,
+  stripHtmlBoilerplateForAi,
+  tokenizeDataImages,
 } from '../utils/aiQuestionUtils';
 import { localVerifyAndFixDrafts } from '../utils/questionAnalysis';
 
@@ -123,6 +126,29 @@ function fileToBase64Image(file: File): Promise<AttachedVisionImage> {
   });
 }
 
+async function compressHtmlEmbeddedImages(html: string): Promise<string> {
+  if (!html || !html.includes('data:image/')) return html;
+  const imgRegex = /(<img[^>]*?\ssrc=["'])(data:image\/[^"']+)(["'][^>]*>)/gi;
+  const matches = Array.from(html.matchAll(imgRegex));
+  if (matches.length === 0) return html;
+
+  let updated = html;
+  for (const m of matches) {
+    const dataUri = m[2];
+    if (dataUri.length <= 180_000) continue;
+    try {
+      const mimeMatch = dataUri.match(/^data:([^;]+);base64,/);
+      const compressed = await compressImageDataUrl(dataUri, mimeMatch?.[1] || 'image/jpeg');
+      if (compressed.previewUrl && compressed.previewUrl.length < dataUri.length) {
+        updated = updated.split(dataUri).join(compressed.previewUrl);
+      }
+    } catch {
+      // Keep original data URI if canvas fails
+    }
+  }
+  return updated;
+}
+
 async function extractPdfContentWithVisionFallback(
   buffer: ArrayBuffer,
   baseName: string
@@ -136,7 +162,8 @@ async function extractPdfContentWithVisionFallback(
   }
   const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise;
   let combinedHtml = '';
-  let totalPlainChars = 0;
+  const visionImages: AttachedVisionImage[] = [];
+  const maxPagesToRender = 16;
 
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
@@ -164,16 +191,13 @@ async function extractPdfContentWithVisionFallback(
     }
     if (currentLine.trim()) pageLines.push(currentLine.trim());
 
-    totalPlainChars += pageLines.join(' ').length;
-    combinedHtml += pageLines.map((l) => `<p>${l}</p>`).join('\n') + '\n';
-  }
+    const pagePlainText = pageLines.join(' ').trim();
+    if (pagePlainText) {
+      combinedHtml += pageLines.map((l) => `<p>${l}</p>`).join('\n') + '\n';
+    }
 
-  // If PDF appears scanned or image-heavy (very little selectable text), render pages to JPEG for Gemini Vision OCR
-  const visionImages: AttachedVisionImage[] = [];
-  if (totalPlainChars < 120 * Math.max(1, Math.min(pdf.numPages, 3))) {
-    const maxPagesToRender = Math.min(pdf.numPages, 8);
-    for (let i = 1; i <= maxPagesToRender; i++) {
-      const page = await pdf.getPage(i);
+    // Per-page scan check: if this specific page has minimal selectable text, render it to JPEG for AI Vision OCR
+    if (pagePlainText.length < 60 && visionImages.length < maxPagesToRender) {
       const viewport = page.getViewport({ scale: 1.35 });
       const canvas = document.createElement('canvas');
       canvas.width = viewport.width;
@@ -272,7 +296,7 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
           if (visionImages.length > 0) {
             setAttachedImages((prev) => [...prev, ...visionImages]);
             setSuccessMsg(
-              `PDF terdeteksi berisi scan/gambar (${visionImages.length} halaman disiapkan untuk AI Vision OCR). Klik "Ekstrak dengan Smart AI".`
+              `PDF terdeteksi berisi ${visionImages.length} halaman scan/gambar untuk AI Vision OCR. Klik "Ekstrak dengan Smart AI (Vision & Auto-Kunci)".`
             );
           }
         } else {
@@ -309,6 +333,26 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
     }
   };
 
+  const tryRunLocalSmartParse = (content: string): ParsedQuestionDraft[] => {
+    if (!content.trim()) return [];
+    const extracted = parseRichHtmlQuestions(content);
+    if (extracted.length === 0) return [];
+    const { drafts: verified } = localVerifyAndFixDrafts(extracted);
+    return verified;
+  };
+
+  const restoreAssetsOnDrafts = (
+    items: ParsedQuestionDraft[],
+    assets: Record<string, string>
+  ): ParsedQuestionDraft[] => {
+    if (Object.keys(assets).length === 0) return items;
+    return items.map((d) => ({
+      ...d,
+      pertanyaanHtml: restoreDataImages(d.pertanyaanHtml, assets),
+      opsi: Array.isArray(d.opsi) ? d.opsi.map((o) => restoreDataImages(o, assets)) : [],
+    }));
+  };
+
   const handleAIParse = async () => {
     const content = pasteEditorRef.current?.innerHTML || rawHtmlContent;
     if (!content.trim() && attachedImages.length === 0) {
@@ -321,7 +365,12 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
     setSuccessMsg(null);
 
     try {
-      const textChunks = content.trim() ? chunkHtmlForAi(content, 11000) : [];
+      // Tokenize embedded base64 images & strip Word XML bloat BEFORE chunking so payloads stay lightweight
+      const { cleanedHtml, assets: clientAssets } = content.trim()
+        ? tokenizeDataImages(content)
+        : { cleanedHtml: '', assets: {} as Record<string, string> };
+      const compactHtml = cleanedHtml.trim() ? stripHtmlBoilerplateForAi(cleanedHtml) : '';
+      const textChunks = compactHtml ? chunkHtmlForAi(compactHtml, 9500) : [];
       const imageBatches = chunkArray(attachedImages, 2);
       const requests: Array<{ content: string; images: Array<{ mimeType: string; data: string }> }> = [];
 
@@ -335,7 +384,7 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
         });
       }
       if (requests.length === 0) {
-        requests.push({ content, images: [] });
+        requests.push({ content: compactHtml, images: [] });
       }
 
       const collected: ParsedQuestionDraft[] = [];
@@ -373,13 +422,22 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
               partialWarn = `Sebagian selesai (${collected.length} soal). Bagian ${i + 1} terhenti: ${msg}`;
               break;
             }
-            setErrorMsg(msg);
+            const localFallback = tryRunLocalSmartParse(content);
+            if (localFallback.length > 0) {
+              setDrafts(localFallback);
+              setErrorMsg(
+                `${msg} · Sebagai gantinya, Deteksi Cerdas Lokal (Gratis Tanpa Limit) mengekstrak ${localFallback.length} soal dari teks/Word Anda.`
+              );
+            } else {
+              setErrorMsg(msg);
+            }
             return;
           }
 
           if (data?.modelUsed) lastModel = data.modelUsed;
           if (data?.questions && data.questions.length > 0) {
-            collected.push(...data.questions);
+            const restored = restoreAssetsOnDrafts(data.questions, clientAssets);
+            collected.push(...restored);
             setDrafts([...collected]);
           }
           if (data?.warning) {
@@ -391,7 +449,15 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
             partialWarn = `Sebagian selesai (${collected.length} soal). Bagian ${i + 1} terhenti: ${msg}`;
             break;
           }
-          setErrorMsg(msg);
+          const localFallback = tryRunLocalSmartParse(content);
+          if (localFallback.length > 0) {
+            setDrafts(localFallback);
+            setErrorMsg(
+              `${msg} · Sebagai gantinya, Deteksi Cerdas Lokal (Gratis Tanpa Limit) mengekstrak ${localFallback.length} soal dari teks/Word Anda.`
+            );
+          } else {
+            setErrorMsg(msg);
+          }
           return;
         } finally {
           window.clearTimeout(timer);
@@ -407,7 +473,15 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
           setErrorMsg(partialWarn);
         }
       } else {
-        setErrorMsg('AI tidak menemukan butir soal pada konten atau gambar tersebut.');
+        const localFallback = tryRunLocalSmartParse(content);
+        if (localFallback.length > 0) {
+          setDrafts(localFallback);
+          setSuccessMsg(
+            `Deteksi Cerdas Lokal (Gratis Tanpa Limit) berhasil mengekstrak ${localFallback.length} butir soal dari dokumen Anda.`
+          );
+        } else {
+          setErrorMsg('AI tidak menemukan butir soal pada konten atau gambar tersebut.');
+        }
       }
     } finally {
       setIsParsing(false);
@@ -486,6 +560,19 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
         if (batches.length > 1) {
           setAiProgressText(`Menganalisis kelompok ${b + 1} dari ${batches.length}...`);
         }
+        const batchAssets: Record<string, string> = {};
+        let imgSeq = 0;
+        const compactBatch = batches[b].map((q) => {
+          const { cleanedHtml, assets } = tokenizeDataImages(q.pertanyaanHtml || '');
+          let strippedHtml = stripHtmlBoilerplateForAi(cleanedHtml);
+          for (const [oldTok, uri] of Object.entries(assets)) {
+            const sharedTok = `__CBT_IMG_${imgSeq++}__`;
+            batchAssets[sharedTok] = uri;
+            strippedHtml = strippedHtml.split(oldTok).join(sharedTok);
+          }
+          return { ...q, pertanyaanHtml: strippedHtml };
+        });
+
         const controller = new AbortController();
         const timer = window.setTimeout(() => controller.abort(), 52000);
         try {
@@ -494,7 +581,7 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
             headers: { 'Content-Type': 'application/json' },
             signal: controller.signal,
             body: JSON.stringify({
-              questions: batches[b],
+              questions: compactBatch,
               action,
               mataPelajaran: activeSubject,
             }),
@@ -518,7 +605,7 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
           }
           if (data?.modelUsed) lastModel = data.modelUsed;
           if (data?.questions && data.questions.length > 0) {
-            enhancedCollected.push(...data.questions);
+            enhancedCollected.push(...restoreAssetsOnDrafts(data.questions, batchAssets));
           } else {
             enhancedCollected.push(...batches[b]);
           }
@@ -571,38 +658,69 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
       return;
     }
     setErrorMsg(null);
-    const extracted = parseRichHtmlQuestions(content);
-    if (extracted.length === 0) {
-      setErrorMsg('Pastikan soal memiliki penomoran seperti 1., 2., 3. agar dapat dipisahkan otomatis.');
+    const verified = tryRunLocalSmartParse(content);
+    if (verified.length === 0) {
+      setErrorMsg('Pastikan soal memiliki penomoran (seperti 1., 2., 3. atau list Word) agar dapat dipisahkan otomatis.');
       return;
     }
-    setDrafts(extracted);
-    setSuccessMsg(`Parser Lokal berhasil mengekstrak ${extracted.length} butir soal dengan tabel & gambar utuh.`);
+    setDrafts(verified);
+    setSuccessMsg(
+      `Deteksi Cerdas Lokal (Gratis Tanpa Limit) berhasil mengekstrak ${verified.length} butir soal lengkap dengan kunci, level kognitif, tabel & gambar utuh.`
+    );
   };
 
   const handleSaveAllDrafts = async () => {
     if (drafts.length === 0 || isSaving) return;
     setIsSaving(true);
+    setErrorMsg(null);
     try {
-      await onSaveImportedQuestions(
-        drafts.map((d) => ({
+      const preparedQuestions: Array<Omit<Question, 'id' | 'createdAt'>> = [];
+      for (const d of drafts) {
+        const compressedHtml = await compressHtmlEmbeddedImages(d.pertanyaanHtml);
+        const compressedOpsi: string[] = [];
+        for (const opt of d.opsi) {
+          compressedOpsi.push(await compressHtmlEmbeddedImages(opt));
+        }
+        preparedQuestions.push({
           mataPelajaran: activeSubject,
           tipe: d.tipe,
-          pertanyaanHtml: d.pertanyaanHtml,
-          opsi: d.opsi,
+          pertanyaanHtml: compressedHtml,
+          opsi: compressedOpsi,
           kunciJawaban: d.kunciJawaban,
           bobot: d.bobot || (d.tipe === 'ESAI' ? 20 : 10),
           createdBy: teacherName,
-        }))
-      );
+        });
+      }
+
+      const saveResult = (await onSaveImportedQuestions(preparedQuestions)) as
+        | { syncedToCloud?: boolean; queued?: boolean; errorMessage?: string }
+        | undefined;
+
       const countSaved = drafts.length;
       setDrafts([]);
       setRawHtmlContent('');
       setAttachedImages([]);
       setFileName(null);
       if (pasteEditorRef.current) pasteEditorRef.current.innerHTML = '';
-      setSuccessMsg(`Berhasil menyimpan ${countSaved} butir soal ke Bank Soal ${activeSubject}!`);
+
+      if (saveResult && saveResult.syncedToCloud === false) {
+        setSuccessMsg(
+          `${countSaved} butir soal disimpan & masuk antrean sinkronisasi server (${activeSubject}).`
+        );
+      } else {
+        setSuccessMsg(
+          `Berhasil menyimpan & menyinkronkan ${countSaved} butir soal ke Bank Soal ${activeSubject}!`
+        );
+      }
       onSuccessRedirect?.();
+    } catch (err) {
+      const msg =
+        err instanceof Error && err.message
+          ? err.message
+          : 'Gagal menyimpan soal ke server database.';
+      setErrorMsg(
+        `Soal belum masuk ke server: ${msg}. Draf Anda tetap aman di layar untuk diperiksa.`
+      );
     } finally {
       setIsSaving(false);
     }
@@ -797,7 +915,7 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
                 <span>
                   {isParsing
                     ? aiProgressText || 'AI Sedang Mengekstrak & Menganalisis...'
-                    : 'Ekstrak dengan Smart AI'}
+                    : 'Ekstrak dengan Smart AI (Vision & Auto-Kunci)'}
                 </span>
               </button>
 
@@ -808,7 +926,7 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
                 className="btn-press inline-flex items-center gap-2 rounded-xl border border-white/65 bg-white/60 px-4 py-2.5 text-xs font-semibold text-slate-700 hover:bg-white/85"
               >
                 <Wand2 className="h-4 w-4 text-emerald-700" />
-                <span>Ekstrak Instan (Parser Lokal)</span>
+                <span>Deteksi Cerdas Lokal (Gratis Tanpa Limit)</span>
               </button>
             </div>
           </div>
@@ -941,7 +1059,7 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
                   className="btn-press inline-flex items-center gap-1.5 rounded-lg border border-red-300 bg-white px-3 py-1.5 font-semibold text-red-700 hover:bg-red-100/60"
                 >
                   <Wand2 className="h-3.5 w-3.5" />
-                  <span>Gunakan Parser Lokal Instan</span>
+                  <span>Jalankan Deteksi Cerdas Lokal (Gratis)</span>
                 </button>
               )}
           </div>
