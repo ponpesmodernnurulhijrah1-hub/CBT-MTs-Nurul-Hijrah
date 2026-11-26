@@ -121,8 +121,14 @@ function evaluateStructuralQuality(q: Pick<Question, 'tipe' | 'pertanyaanHtml' |
   let score = 100;
   let validitasKunci: KeyValidityStatus = 'Valid';
 
-  const plain = stripHtmlToPlainText(q.pertanyaanHtml);
-  const hasMedia = /<(?:img|table)/i.test(q.pertanyaanHtml);
+  const safeHtml = String(q?.pertanyaanHtml || '');
+  const safeOpsi = Array.isArray(q?.opsi) ? q.opsi : [];
+  const safeKeys = Array.isArray(q?.kunciJawaban)
+    ? q.kunciJawaban.map((k) => String(k || ''))
+    : [];
+
+  const plain = stripHtmlToPlainText(safeHtml);
+  const hasMedia = /<(?:img|table)/i.test(safeHtml);
 
   if (!plain && !hasMedia) {
     temuan.push('Teks pertanyaan kosong.');
@@ -133,39 +139,38 @@ function evaluateStructuralQuality(q: Pick<Question, 'tipe' | 'pertanyaanHtml' |
   }
 
   if (q.tipe === 'PG' || q.tipe === 'PG_KOMPLEKS') {
-    if (q.opsi.length < 3) {
-      temuan.push(`Jumlah opsi hanya ${q.opsi.length} (minimal 4 opsi disarankan untuk CBT MTs).`);
+    if (safeOpsi.length < 3) {
+      temuan.push(`Jumlah opsi hanya ${safeOpsi.length} (minimal 4 opsi disarankan untuk CBT MTs).`);
       score -= 25;
       validitasKunci = 'Perlu Cek';
     }
 
-    const emptyOptIdx = q.opsi.findIndex((o) => !String(o || '').trim());
+    const emptyOptIdx = safeOpsi.findIndex((o) => !String(o || '').trim());
     if (emptyOptIdx !== -1) {
       temuan.push(`Opsi ${getOptionLetter(emptyOptIdx)} masih kosong.`);
       score -= 20;
       validitasKunci = 'Perlu Cek';
     }
 
-    const normalizedOpts = q.opsi.map((o) => String(o || '').trim().toLowerCase()).filter(Boolean);
+    const normalizedOpts = safeOpsi.map((o) => String(o || '').trim().toLowerCase()).filter(Boolean);
     if (new Set(normalizedOpts).size < normalizedOpts.length) {
       temuan.push('Terdapat teks opsi jawaban yang kembar/duplikat.');
       score -= 20;
     }
 
-    const validLetters = q.opsi.map((_, idx) => getOptionLetter(idx));
-    const keys = Array.isArray(q.kunciJawaban) ? q.kunciJawaban : [];
-    if (keys.length === 0) {
+    const validLetters = safeOpsi.map((_, idx) => getOptionLetter(idx));
+    if (safeKeys.length === 0) {
       temuan.push('Kunci jawaban belum ditentukan.');
       score -= 35;
       validitasKunci = 'Perlu Cek';
     } else {
-      const invalidKey = keys.find((k) => !validLetters.includes(k.toUpperCase()));
+      const invalidKey = safeKeys.find((k) => !validLetters.includes(k.toUpperCase()));
       if (invalidKey) {
         temuan.push(`Kunci "${invalidKey}" tidak cocok dengan jumlah opsi (${validLetters.join(', ')}).`);
         score -= 35;
         validitasKunci = 'Perlu Cek';
       }
-      if (q.tipe === 'PG_KOMPLEKS' && keys.length < 2) {
+      if (q.tipe === 'PG_KOMPLEKS' && safeKeys.length < 2) {
         temuan.push('PG Kompleks sebaiknya memiliki minimal 2 kunci jawaban benar.');
         score -= 10;
         if (validitasKunci === 'Valid') validitasKunci = 'Meragukan';
@@ -173,13 +178,13 @@ function evaluateStructuralQuality(q: Pick<Question, 'tipe' | 'pertanyaanHtml' |
     }
 
     // Check distractor vs key length skew (> 2.2x longer key gives away answer)
-    if (q.opsi.length >= 3 && keys.length > 0) {
+    if (safeOpsi.length >= 3 && safeKeys.length > 0) {
       const keyLens: number[] = [];
       const distractorLens: number[] = [];
-      q.opsi.forEach((optText, idx) => {
+      safeOpsi.forEach((optText, idx) => {
         const letter = getOptionLetter(idx);
         const len = String(optText || '').trim().length;
-        if (keys.includes(letter)) keyLens.push(len);
+        if (safeKeys.includes(letter)) keyLens.push(len);
         else distractorLens.push(len);
       });
       if (keyLens.length > 0 && distractorLens.length > 0) {
@@ -192,19 +197,19 @@ function evaluateStructuralQuality(q: Pick<Question, 'tipe' | 'pertanyaanHtml' |
       }
     }
 
-    if (q.opsi.some((o) => /^[A-E][\.\)\-:]\s+/i.test(String(o || '').trim()))) {
+    if (safeOpsi.some((o) => /^[A-E][\.\)\-:]\s+/i.test(String(o || '').trim()))) {
       temuan.push('Opsi masih mengandung awalan huruf ganda (misal "A. ").');
       score -= 8;
     }
   } else if (q.tipe === 'BENAR_SALAH') {
-    const key = String(q.kunciJawaban?.[0] || '').trim();
+    const key = String(safeKeys[0] || '').trim();
     if (key !== 'Benar' && key !== 'Salah') {
       temuan.push('Kunci Benar/Salah harus bernilai "Benar" atau "Salah".');
       score -= 30;
       validitasKunci = 'Perlu Cek';
     }
   } else if (q.tipe === 'ESAI') {
-    if (!q.kunciJawaban?.[0]?.trim()) {
+    if (!String(safeKeys[0] || '').trim()) {
       temuan.push('Pedoman rubrik/kunci esai belum diisi (disarankan agar koreksi AI & guru konsisten).');
       score -= 10;
     }
@@ -227,12 +232,24 @@ export function analyzeQuestionBankAndResults(
   questions: Question[],
   results: ExamResult[]
 ): QuestionBankAnalysisSummary {
-  const sortedByScoreDesc = [...results].sort((a, b) => b.nilaiAkhir - a.nilaiAkhir);
+  const safeQuestions = Array.isArray(questions) ? questions : [];
+  const safeResults = Array.isArray(results) ? results : [];
+  const sortedByScoreDesc = [...safeResults].sort((a, b) => (b.nilaiAkhir || 0) - (a.nilaiAkhir || 0));
 
-  const items: LocalQuestionAnalysisItem[] = questions.map((q, idx) => {
-    const plainText = stripHtmlToPlainText(q.pertanyaanHtml);
-    const levelKognitif = detectCognitiveLevel(q.pertanyaanHtml, q.tipe);
-    const structure = evaluateStructuralQuality(q);
+  const items: LocalQuestionAnalysisItem[] = safeQuestions.map((q, idx) => {
+    const safeHtml = String(q?.pertanyaanHtml || '');
+    const safeOpsi = Array.isArray(q?.opsi) ? q.opsi : [];
+    const safeKeys = Array.isArray(q?.kunciJawaban)
+      ? q.kunciJawaban.map((k) => String(k || ''))
+      : [];
+    const plainText = stripHtmlToPlainText(safeHtml);
+    const levelKognitif = detectCognitiveLevel(safeHtml, q.tipe);
+    const structure = evaluateStructuralQuality({
+      tipe: q.tipe,
+      pertanyaanHtml: safeHtml,
+      opsi: safeOpsi,
+      kunciJawaban: safeKeys,
+    });
 
     // Gather all student responses targeting this questionId
     const respondentOutcomes: Array<{
@@ -243,7 +260,8 @@ export function analyzeQuestionBankAndResults(
     }> = [];
 
     sortedByScoreDesc.forEach((res, rankIdx) => {
-      const detail = res.jawabanDetail.find((d) => d.questionId === q.id);
+      const safeDetailList = Array.isArray(res?.jawabanDetail) ? res.jawabanDetail : [];
+      const detail = safeDetailList.find((d) => d.questionId === q.id);
       if (!detail) return;
       const cleanAns = Array.isArray(detail.jawaban)
         ? detail.jawaban.map((v) => String(v || '').trim()).filter(Boolean)
@@ -251,7 +269,7 @@ export function analyzeQuestionBankAndResults(
       const isBlank = cleanAns.length === 0;
       let isCorrect = Boolean(detail.benar);
       if (detail.benar === undefined && q.tipe !== 'ESAI') {
-        const expected = [...q.kunciJawaban].map((k) => k.toUpperCase()).sort();
+        const expected = [...safeKeys].map((k) => k.toUpperCase()).sort();
         const actual = [...cleanAns].map((k) => k.toUpperCase()).sort();
         isCorrect =
           expected.length > 0 &&
@@ -293,17 +311,17 @@ export function analyzeQuestionBankAndResults(
         ? ['Benar', 'Salah']
         : q.tipe === 'ESAI'
           ? []
-          : q.opsi.map((_, oIdx) => getOptionLetter(oIdx));
+          : safeOpsi.map((_, oIdx) => getOptionLetter(oIdx));
 
     const distribusiOpsi: OptionChoiceStat[] = optionKeys.map((label, oIdx) => {
       const count = respondentOutcomes.filter((o) =>
         o.jawaban.some((ans) => ans.toUpperCase() === label.toUpperCase())
       ).length;
       const percentage = totalResponden > 0 ? Math.round((count / totalResponden) * 100) : 0;
-      const isKey = q.kunciJawaban.some((k) => k.toUpperCase() === label.toUpperCase());
+      const isKey = safeKeys.some((k) => k.toUpperCase() === label.toUpperCase());
       return {
         label,
-        text: q.tipe === 'BENAR_SALAH' ? label : q.opsi[oIdx] || '',
+        text: q.tipe === 'BENAR_SALAH' ? label : safeOpsi[oIdx] || '',
         count,
         percentage,
         isKey,
@@ -361,7 +379,7 @@ export function analyzeQuestionBankAndResults(
       tipe: q.tipe,
       plainText: plainText || '(Soal berbasis gambar/tabel)',
       bobot: q.bobot || 10,
-      kunciJawaban: q.kunciJawaban,
+      kunciJawaban: safeKeys,
       totalResponden,
       correctCount,
       wrongCount,

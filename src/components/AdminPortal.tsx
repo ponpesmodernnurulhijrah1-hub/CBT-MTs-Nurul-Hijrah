@@ -40,6 +40,7 @@ import type {
 } from '../types/cbt';
 import { SyncStatusIndicator } from './SyncStatusIndicator';
 import { printPrivacySafeTeacherDirectory } from '../utils/exportHelpers';
+import { hashCredential } from '../utils/crypto';
 import { getTeacherSubjects } from '../utils/storeSyncUtils';
 import { useActiveMotionFlag, useLiquidMorphPill, useTabSlideDirection } from '../hooks/useLiquidMotion';
 
@@ -237,6 +238,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [guruMapelList, setGuruMapelList] = useState<string[]>([]);
   const [guruUsername, setGuruUsername] = useState('');
   const [guruPassword, setGuruPassword] = useState('');
+  const [guruFormError, setGuruFormError] = useState<string | null>(null);
   const [showAddGuruPassword, setShowAddGuruPassword] = useState(false);
   const [guruSearch, setGuruSearch] = useState('');
   const [editingTeacher, setEditingTeacher] = useState<TeacherAccount | null>(null);
@@ -1407,15 +1409,27 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             <form
               onSubmit={async (e) => {
                 e.preventDefault();
-                if (!guruNama.trim() || !guruUsername.trim() || !guruPassword) return;
-                const primary = effectiveGuruMapel || 'Matematika';
+                setGuruFormError(null);
+                const cleanNama = guruNama.trim();
+                const cleanUsername = guruUsername.trim();
+                const cleanPassword = guruPassword.trim();
+                if (!cleanNama || !cleanUsername || !cleanPassword) {
+                  setGuruFormError('Nama, username, dan password guru wajib diisi.');
+                  return;
+                }
+                const uHash = await hashCredential(cleanUsername);
+                if (teachers.some((t) => t.usernameHash === uHash)) {
+                  setGuruFormError(`Username "${cleanUsername}" sudah dipakai akun guru lain.`);
+                  return;
+                }
+                const primary = effectiveGuruMapel || subjectNames[0] || 'Matematika';
                 const extraList = Array.from(new Set([primary, ...guruMapelList]));
                 await onAddTeacher({
-                  nama: guruNama,
+                  nama: cleanNama,
                   mataPelajaran: primary,
                   mataPelajaranList: extraList,
-                  username: guruUsername,
-                  password: guruPassword,
+                  username: cleanUsername,
+                  password: cleanPassword,
                 });
                 setGuruNama('');
                 setGuruUsername('');
@@ -1523,6 +1537,12 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                       );
                     })}
                   </div>
+                </div>
+              )}
+
+              {guruFormError && (
+                <div className="rounded-xl border border-red-300/70 bg-red-500/15 px-3.5 py-2 text-xs font-medium text-red-900">
+                  {guruFormError}
                 </div>
               )}
 
@@ -1671,14 +1691,18 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 <form
                   onSubmit={async (e) => {
                     e.preventDefault();
+                    const validPrimaryMapel = subjectNames.includes(editGuruMapel)
+                      ? editGuruMapel
+                      : subjectNames[0] || editGuruMapel || 'Matematika';
                     const combinedSubjects = Array.from(
-                      new Set([editGuruMapel, ...editGuruMapelList])
+                      new Set([validPrimaryMapel, ...editGuruMapelList.filter((s) => subjectNames.includes(s))])
                     );
+                    const trimmedPass = editGuruNewPassword.trim();
                     await onUpdateTeacher(editingTeacher.id, {
-                      nama: editGuruNama,
-                      mataPelajaran: editGuruMapel,
+                      nama: editGuruNama.trim(),
+                      mataPelajaran: validPrimaryMapel,
                       mataPelajaranList: combinedSubjects,
-                      newPassword: editGuruNewPassword || undefined,
+                      newPassword: trimmedPass || undefined,
                       aktif: editGuruAktif,
                     });
                     setEditingTeacher(null);

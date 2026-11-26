@@ -41,7 +41,7 @@ const RIPPLE_SELECTOR =
 const TILT_SELECTOR =
   '.surface-card:not(.exam-reading-surface), .surface-card-interactive, .glass-modal:not([data-no-tilt="true"])';
 const SHARED_MORPH_TRIGGER_SELECTOR = '.btn-press, button, [role="button"], .surface-card-interactive';
-const SHARED_MORPH_TARGET_SELECTOR = '.glass-modal, [data-shared-morph="true"]';
+const SHARED_MORPH_TARGET_SELECTOR = '.glass-modal';
 
 function clearTiltVars(el: HTMLElement | null): void {
   if (!el || !el.isConnected) return;

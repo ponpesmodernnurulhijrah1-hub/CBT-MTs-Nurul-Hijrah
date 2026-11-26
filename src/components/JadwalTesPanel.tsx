@@ -48,8 +48,12 @@ export const JadwalTesPanel: React.FC<JadwalTesPanelProps> = ({
   const [durasiMenit, setDurasiMenit] = useState(45);
   const [token, setToken] = useState(generateExamToken());
   const [acakSoal, setAcakSoal] = useState(false);
-  const [selectedQuestionIds, setSelectedQuestionIds] = useState<string[]>([]);
+  const [selectedQuestionIds, setSelectedQuestionIds] = useState<string[]>(() => {
+    const initSubj = lockedSubject || subjects[0] || '';
+    return questions.filter((q) => q.mataPelajaran === initSubj).map((q) => q.id);
+  });
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [savingSchedule, setSavingSchedule] = useState(false);
   const [formMsg, setFormMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const formRef = useRef<HTMLFormElement | null>(null);
 
@@ -87,7 +91,8 @@ export const JadwalTesPanel: React.FC<JadwalTesPanelProps> = ({
     }
   };
 
-  const resetForm = () => {
+  const resetForm = (subjOverride?: string) => {
+    const targetSubj = subjOverride ?? effectiveSubject;
     setEditingExam(null);
     setReplaceQuestionsMode(false);
     setJudulUjian('');
@@ -95,15 +100,20 @@ export const JadwalTesPanel: React.FC<JadwalTesPanelProps> = ({
     setDurasiMenit(45);
     setToken(generateExamToken());
     setAcakSoal(false);
-    setSelectedQuestionIds([]);
+    setSelectedQuestionIds(
+      questions.filter((q) => q.mataPelajaran === targetSubj).map((q) => q.id)
+    );
   };
 
   const startEditingExam = (exam: ExamSchedule) => {
+    const validTargets = exam.kelasTarget.filter(
+      (c) => c === 'Semua Kelas' || classes.includes(c)
+    );
     setEditingExam(exam);
     setReplaceQuestionsMode(false);
     setJudulUjian(exam.judulUjian);
     setMataPelajaran(exam.mataPelajaran);
-    setSelectedClasses(exam.kelasTarget.length > 0 ? exam.kelasTarget : ['Semua Kelas']);
+    setSelectedClasses(validTargets.length > 0 ? validTargets : ['Semua Kelas']);
     setDurasiMenit(exam.durasiMenit);
     setToken(exam.token);
     setAcakSoal(exam.acakSoal);
@@ -114,6 +124,7 @@ export const JadwalTesPanel: React.FC<JadwalTesPanelProps> = ({
 
   const handleSaveSchedule = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (savingSchedule) return;
     setFormMsg(null);
     if (!judulUjian.trim()) {
       setFormMsg({ type: 'error', text: 'Judul ujian wajib diisi.' });
@@ -142,18 +153,25 @@ export const JadwalTesPanel: React.FC<JadwalTesPanelProps> = ({
 
     if (editingExam) {
       let nextSnapshot = editingExam.questionsSnapshot;
-      if (replaceQuestionsMode || nextSnapshot.length === 0) {
-        const chosenQuestions =
-          validSelectedQuestionIds.length > 0
-            ? availableQuestions.filter((q) => validSelectedQuestionIds.includes(q.id))
-            : availableQuestions;
-        if (chosenQuestions.length === 0) {
+      const subjectChanged = effectiveSubject !== editingExam.mataPelajaran;
+      if (replaceQuestionsMode || subjectChanged || nextSnapshot.length === 0) {
+        if (availableQuestions.length === 0) {
           setFormMsg({
             type: 'error',
             text: `Belum ada soal di Bank Soal ${effectiveSubject}. Pilih soal atau pertahankan soal tes saat ini.`,
           });
           return;
         }
+        if (validSelectedQuestionIds.length === 0) {
+          setFormMsg({
+            type: 'error',
+            text: 'Pilih minimal 1 soal dari Bank Soal sebelum menyimpan jadwal.',
+          });
+          return;
+        }
+        const chosenQuestions = availableQuestions.filter((q) =>
+          validSelectedQuestionIds.includes(q.id)
+        );
         nextSnapshot = chosenQuestions.map((q) => ({
           ...q,
           opsi: [...q.opsi],
@@ -161,11 +179,14 @@ export const JadwalTesPanel: React.FC<JadwalTesPanelProps> = ({
         }));
       }
 
+      const validTargetClasses = selectedClasses.filter(
+        (c) => c === 'Semua Kelas' || classes.includes(c)
+      );
       const updatedExam: ExamSchedule = {
         ...editingExam,
         judulUjian: judulUjian.trim(),
         mataPelajaran: effectiveSubject,
-        kelasTarget: selectedClasses.length > 0 ? selectedClasses : ['Semua Kelas'],
+        kelasTarget: validTargetClasses.length > 0 ? validTargetClasses : ['Semua Kelas'],
         durasiMenit: safeDuration,
         token: cleanToken,
         acakSoal,
@@ -173,27 +194,43 @@ export const JadwalTesPanel: React.FC<JadwalTesPanelProps> = ({
         updatedAt: new Date().toISOString(),
       };
 
-      await onSaveExam(updatedExam);
-      resetForm();
-      setFormMsg({
-        type: 'success',
-        text: `Jadwal "${updatedExam.judulUjian}" (${updatedExam.questionsSnapshot.length} soal) berhasil diperbarui dan disinkronkan secara real-time.`,
-      });
+      setSavingSchedule(true);
+      try {
+        await onSaveExam(updatedExam);
+        resetForm(effectiveSubject);
+        setFormMsg({
+          type: 'success',
+          text: `Jadwal "${updatedExam.judulUjian}" (${updatedExam.questionsSnapshot.length} soal) berhasil diperbarui dan disinkronkan secara real-time.`,
+        });
+      } catch (err) {
+        setFormMsg({
+          type: 'error',
+          text: err instanceof Error ? err.message : 'Gagal menyimpan perubahan jadwal ujian.',
+        });
+      } finally {
+        setSavingSchedule(false);
+      }
       return;
     }
 
-    const chosenQuestions =
-      validSelectedQuestionIds.length > 0
-        ? availableQuestions.filter((q) => validSelectedQuestionIds.includes(q.id))
-        : availableQuestions;
-
-    if (chosenQuestions.length === 0) {
+    if (availableQuestions.length === 0) {
       setFormMsg({
         type: 'error',
         text: `Belum ada soal di Bank Soal ${effectiveSubject}. Tambahkan soal terlebih dahulu.`,
       });
       return;
     }
+    if (validSelectedQuestionIds.length === 0) {
+      setFormMsg({
+        type: 'error',
+        text: 'Pilih minimal 1 soal dari Bank Soal sebelum menerbitkan jadwal ujian.',
+      });
+      return;
+    }
+
+    const chosenQuestions = availableQuestions.filter((q) =>
+      validSelectedQuestionIds.includes(q.id)
+    );
 
     // Create deep snapshot of questions inside exam schedule
     const exam = createExamWithSnapshot({
@@ -208,12 +245,22 @@ export const JadwalTesPanel: React.FC<JadwalTesPanelProps> = ({
       createdBy: teacherName,
     });
 
-    await onSaveExam(exam);
-    resetForm();
-    setFormMsg({
-      type: 'success',
-      text: `Jadwal "${exam.judulUjian}" berhasil diterbitkan dengan ${exam.questionsSnapshot.length} soal ter-snapshot dan tersinkron ke seluruh perangkat.`,
-    });
+    setSavingSchedule(true);
+    try {
+      await onSaveExam(exam);
+      resetForm(effectiveSubject);
+      setFormMsg({
+        type: 'success',
+        text: `Jadwal "${exam.judulUjian}" berhasil diterbitkan dengan ${exam.questionsSnapshot.length} soal ter-snapshot dan tersinkron ke seluruh perangkat.`,
+      });
+    } catch (err) {
+      setFormMsg({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Gagal menerbitkan jadwal ujian.',
+      });
+    } finally {
+      setSavingSchedule(false);
+    }
   };
 
   const copyToken = (id: string, tok: string) => {
@@ -282,8 +329,14 @@ export const JadwalTesPanel: React.FC<JadwalTesPanelProps> = ({
               <select
                 value={effectiveSubject}
                 onChange={(e) => {
-                  setMataPelajaran(e.target.value);
-                  setSelectedQuestionIds([]);
+                  const nextSubj = e.target.value;
+                  setMataPelajaran(nextSubj);
+                  setSelectedQuestionIds(
+                    questions.filter((q) => q.mataPelajaran === nextSubj).map((q) => q.id)
+                  );
+                  if (editingExam && nextSubj !== editingExam.mataPelajaran) {
+                    setReplaceQuestionsMode(true);
+                  }
                 }}
                 className="glass-input w-full rounded-xl px-3.5 py-2 text-sm text-slate-900"
               >
@@ -395,7 +448,12 @@ export const JadwalTesPanel: React.FC<JadwalTesPanelProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => setReplaceQuestionsMode(true)}
+                onClick={() => {
+                  setReplaceQuestionsMode(true);
+                  if (validSelectedQuestionIds.length === 0 && availableQuestions.length > 0) {
+                    setSelectedQuestionIds(availableQuestions.map((q) => q.id));
+                  }
+                }}
                 className={`btn-press rounded-xl px-3 py-1.5 text-xs font-semibold transition-colors ${
                   replaceQuestionsMode
                     ? 'bg-emerald-700 text-white shadow-xs'
@@ -413,7 +471,7 @@ export const JadwalTesPanel: React.FC<JadwalTesPanelProps> = ({
           <div className="glass-subtle rounded-2xl p-3.5">
             <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
               <span className="text-xs font-semibold text-slate-700">
-                Pilih Soal dari Bank Soal {effectiveSubject} ({validSelectedQuestionIds.length || availableQuestions.length} dipilih dari {availableQuestions.length} tersedia)
+                Pilih Soal dari Bank Soal {effectiveSubject} ({validSelectedQuestionIds.length} dipilih dari {availableQuestions.length} tersedia)
               </span>
               <div className="flex items-center gap-3">
                 <label className="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer">
@@ -501,10 +559,17 @@ export const JadwalTesPanel: React.FC<JadwalTesPanelProps> = ({
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="submit"
-            className="btn-press inline-flex items-center gap-2 rounded-xl bg-emerald-700 px-4 py-2.5 text-xs font-semibold text-white hover:bg-emerald-800 shadow-sm"
+            disabled={savingSchedule}
+            className="btn-press inline-flex items-center gap-2 rounded-xl bg-emerald-700 px-4 py-2.5 text-xs font-semibold text-white hover:bg-emerald-800 shadow-sm disabled:opacity-60"
           >
             <CalendarPlus className="h-4 w-4" />
-            <span>{editingExam ? 'Simpan Perubahan Jadwal' : 'Terbitkan Jadwal Ujian'}</span>
+            <span>
+              {savingSchedule
+                ? 'Menyimpan...'
+                : editingExam
+                  ? 'Simpan Perubahan Jadwal'
+                  : 'Terbitkan Jadwal Ujian'}
+            </span>
           </button>
         </div>
       </form>

@@ -604,42 +604,6 @@ export default function App() {
       data-zen-focus={isExamLocked ? 'true' : undefined}
       className="ios-mesh-bg min-h-[100dvh] w-full max-w-full text-slate-900 flex flex-col relative overflow-x-clip"
     >
-      {/* Shared Hyper-Liquid SVG Optical Filters (#hyper-glass-refract & #liquid-gooey) */}
-      <svg
-        aria-hidden="true"
-        width="0"
-        height="0"
-        className="pointer-events-none fixed h-0 w-0 overflow-hidden opacity-0 no-print"
-      >
-        <defs>
-          <filter id="hyper-glass-refract" x="-3%" y="-3%" width="106%" height="106%">
-            <feTurbulence
-              type="fractalNoise"
-              baseFrequency="0.008 0.012"
-              numOctaves="1"
-              seed="7"
-              result="noise"
-            />
-            <feDisplacementMap
-              in="SourceGraphic"
-              in2="noise"
-              scale="1.6"
-              xChannelSelector="R"
-              yChannelSelector="G"
-            />
-          </filter>
-          <filter id="liquid-gooey">
-            <feGaussianBlur in="SourceGraphic" stdDeviation="5" result="blur" />
-            <feColorMatrix
-              in="blur"
-              mode="matrix"
-              values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 21 -8"
-              result="goo"
-            />
-            <feComposite in="SourceGraphic" in2="goo" operator="atop" />
-          </filter>
-        </defs>
-      </svg>
 
       {/* Interactive Living Fluid WebGL/2D Simulation & Aurora Mist Backdrop */}
       <div
@@ -761,7 +725,6 @@ export default function App() {
             key="siswa"
             className="portal-transition-enter"
             data-portal-view="siswa"
-            data-shared-morph="true"
             data-motion-active={portalMotion.motionActive ? 'true' : undefined}
             onAnimationEnd={portalMotion.onAnimationEnd}
           >
@@ -802,7 +765,6 @@ export default function App() {
                 key="guru"
                 className="portal-transition-enter"
                 data-portal-view="guru"
-                data-shared-morph="true"
                 data-motion-active={portalMotion.motionActive ? 'true' : undefined}
                 onAnimationEnd={portalMotion.onAnimationEnd}
               >
@@ -846,7 +808,6 @@ export default function App() {
                 key="admin"
                 className="portal-transition-enter"
                 data-portal-view="admin"
-                data-shared-morph="true"
                 data-motion-active={portalMotion.motionActive ? 'true' : undefined}
                 onAnimationEnd={portalMotion.onAnimationEnd}
               >

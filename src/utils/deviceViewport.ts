@@ -6,6 +6,7 @@ export interface DeviceHardwareSignals {
   deviceType: DeviceViewportClass;
   hardwareConcurrency?: number | null;
   deviceMemory?: number | null;
+  devicePixelRatio?: number | null;
   saveData?: boolean;
   effectiveType?: string | null;
   isCoarsePointer?: boolean;
@@ -14,8 +15,8 @@ export interface DeviceHardwareSignals {
 
 /**
  * Classifies the active device into a GPU/CPU rendering tier so entry-level phones
- * receive zero-lag 60fps pure-2D composited transitions while higher-end devices
- * get full refractive Hyper-Liquid Glass effects.
+ * receive zero-lag 60fps pure-2D composited transitions while mid-range and flagship/4K
+ * devices get adaptive Liquid Glass clarity.
  */
 export function resolveDevicePerfTier(signals: DeviceHardwareSignals): DevicePerfTier {
   if (signals.prefersReducedMotion || signals.saveData) {
@@ -37,23 +38,39 @@ export function resolveDevicePerfTier(signals: DeviceHardwareSignals): DevicePer
     signals.hardwareConcurrency > 0
       ? signals.hardwareConcurrency
       : null;
+  const dpr =
+    typeof signals.devicePixelRatio === 'number' &&
+    Number.isFinite(signals.devicePixelRatio) &&
+    signals.devicePixelRatio > 0
+      ? signals.devicePixelRatio
+      : null;
 
-  // 1-3 GB RAM devices (classic entry-level smartphones)
-  if (mem !== null && mem <= 3) {
+  // Entry-level devices: <= 4 GB RAM OR <= 4 CPU cores
+  if ((mem !== null && mem <= 4) || (cores !== null && cores <= 4)) {
     return 'lite';
   }
 
-  // <= 4 CPU cores on mobile/touch phones
-  if (cores !== null && cores <= 4 && (signals.deviceType === 'mobile' || signals.isCoarsePointer)) {
-    return 'lite';
+  // Flagship / workstation capability (> 8 cores or > 8 GB RAM)
+  if ((cores !== null && cores > 8) || (mem !== null && mem > 8)) {
+    return 'high';
   }
 
-  // Mid-range mobile/tablet/touch or 4 GB RAM or <= 4 cores desktop
+  // Hi-DPI capable desktop (Retina/4K) or >= 8-core & >= 8GB non-touch desktop
+  if (signals.deviceType === 'desktop' && !signals.isCoarsePointer) {
+    if (dpr !== null && dpr >= 1.5) {
+      return 'high';
+    }
+    if (cores !== null && cores >= 8 && (mem === null || mem >= 8)) {
+      return 'high';
+    }
+  }
+
+  // Mid-range mobile/tablet/touch or 6-8 core / 6-8 GB RAM devices
   if (
     signals.deviceType === 'mobile' ||
     signals.isCoarsePointer ||
-    (mem !== null && mem <= 4) ||
-    (cores !== null && cores <= 4)
+    (mem !== null && mem <= 8) ||
+    (cores !== null && cores <= 8)
   ) {
     return 'balanced';
   }
@@ -63,7 +80,7 @@ export function resolveDevicePerfTier(signals: DeviceHardwareSignals): DevicePer
 
 /**
  * Evaluates measured rolling FPS and steps performance tier down monotonically
- * when sustained frame pacing drops below target so limited GPUs stay zero-lag.
+ * when sustained frame pacing drops below 45 FPS for 2 consecutive seconds.
  */
 export function evaluateAdaptiveFpsStepDown(
   currentTier: DevicePerfTier,
@@ -73,10 +90,10 @@ export function evaluateAdaptiveFpsStepDown(
   if (!Number.isFinite(measuredFps) || measuredFps <= 0 || lowWindowStreak < 2) {
     return currentTier;
   }
-  if (currentTier === 'high' && measuredFps < 44) {
+  if (currentTier === 'high' && measuredFps < 45) {
     return 'balanced';
   }
-  if (currentTier === 'balanced' && measuredFps < 34) {
+  if (currentTier === 'balanced' && measuredFps < 45) {
     return 'lite';
   }
   return currentTier;
@@ -211,6 +228,7 @@ export function syncDocumentDeviceAttributes(): {
     deviceType,
     hardwareConcurrency: typeof nav.hardwareConcurrency === 'number' ? nav.hardwareConcurrency : null,
     deviceMemory: typeof nav.deviceMemory === 'number' ? nav.deviceMemory : null,
+    devicePixelRatio: typeof window.devicePixelRatio === 'number' ? window.devicePixelRatio : null,
     saveData: Boolean(nav.connection?.saveData),
     effectiveType: typeof nav.connection?.effectiveType === 'string' ? nav.connection.effectiveType : null,
     isCoarsePointer,

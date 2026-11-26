@@ -808,6 +808,7 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
     if (typeof navigator !== 'undefined' && !navigator.onLine) {
       const offlineMsg = 'Perangkat sedang offline. Perubahan tersimpan lokal dan akan dikirim saat online.';
       setCloudConnected(false);
+      setConnectionPhase('offline');
       setSyncError(offlineMsg);
       recordSyncLog({
         status: 'Menunggu',
@@ -823,11 +824,157 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
     setSyncError(null);
     try {
       await flushPendingQueue();
-      await getDocFromServer(doc(db, 'settings', 'cbt_bootstrap')).catch(() => {});
+
+      const roleNow = actorContextRef.current.role;
+      const basePromises = [
+        getDocFromServer(doc(db, 'settings', 'cbt_bootstrap')).catch(() => null),
+        getDocsFromServer(collection(db, 'subjects')),
+        getDocsFromServer(collection(db, 'classes')),
+        getDocsFromServer(collection(db, 'teachers')),
+        getDocsFromServer(collection(db, 'admins')),
+        getDocsFromServer(collection(db, 'exams')),
+      ] as const;
+
+      const heavyPromises =
+        roleNow !== 'siswa'
+          ? ([
+              getDocsFromServer(collection(db, 'questions')),
+              getDocsFromServer(collection(db, 'results')),
+            ] as const)
+          : null;
+
+      const [baseSnaps, heavySnaps] = await withTimeout(
+        Promise.all([
+          Promise.all(basePromises),
+          heavyPromises ? Promise.all(heavyPromises) : Promise.resolve(null),
+        ]),
+        DEFAULT_CONNECTION_TIMEOUT_MS,
+        'Sinkronisasi manual ke database pusat melewati batas waktu.'
+      );
+
+      const [, subjSnap, clsSnap, teachSnap, adminSnap, examSnap] = baseSnaps;
+      const primaryAdmin = await buildPrimaryAdminAccount();
+
+      const filterServerCol = (
+        colName: string,
+        snapDocs: typeof subjSnap.docs
+      ): Array<Record<string, unknown> & { id: string }> =>
+        filterOutPendingDeletes(
+          snapDocs.map((d) => ({ ...(d.data() as Record<string, unknown>), id: d.id })),
+          pendingDeletedIdsRef.current,
+          (d) => `${colName}:${String(d.id)}`
+        ) as Array<Record<string, unknown> & { id: string }>;
+
+      const nextSubjects = !subjSnap.empty
+        ? (filterServerCol('subjects', subjSnap.docs).map((d) => {
+            const nama = String(d.nama || '');
+            return {
+              ...d,
+              nama,
+              kode: String(d.kode || nama.slice(0, 5).toUpperCase()),
+              createdAt: String(d.createdAt || new Date().toISOString()),
+            };
+          }) as unknown as SubjectItem[])
+        : null;
+
+      const nextClasses = !clsSnap.empty
+        ? (filterServerCol('classes', clsSnap.docs).map((d) => {
+            const nama = String(d.nama || '');
+            return {
+              ...d,
+              nama,
+              tingkat: String(d.tingkat || nama),
+              createdAt: String(d.createdAt || new Date().toISOString()),
+            };
+          }) as unknown as ClassItem[])
+        : null;
+
+      const nextTeachers = !teachSnap.empty
+        ? (filterServerCol('teachers', teachSnap.docs).map((d) => {
+            const primaryMapel = String(d.mataPelajaran || d.mapel || 'Matematika');
+            const list = Array.isArray(d.mataPelajaranList)
+              ? d.mataPelajaranList.map((m) => String(m)).filter(Boolean)
+              : [primaryMapel];
+            return {
+              ...d,
+              nama: String(d.nama || ''),
+              mataPelajaran: primaryMapel,
+              mataPelajaranList: Array.from(new Set([primaryMapel, ...list])),
+              usernameHash: String(d.usernameHash || ''),
+              usernameMasked: '••••••••',
+              passwordHash: String(d.passwordHash || d.passHash || ''),
+              aktif: d.aktif !== false,
+              createdAt: String(d.createdAt || new Date().toISOString()),
+            };
+          }) as unknown as TeacherAccount[])
+        : null;
+
+      const nextExams = !examSnap.empty
+        ? (filterServerCol('exams', examSnap.docs).map((d) => ({
+            ...d,
+            kelasTarget: Array.isArray(d.kelasTarget) ? d.kelasTarget : ['Semua Kelas'],
+            questionsSnapshot: Array.isArray(d.questionsSnapshot) ? d.questionsSnapshot : [],
+          })) as unknown as ExamSchedule[])
+        : null;
+
+      const rawAdmins = adminSnap.docs.map((d) => ({
+        ...(d.data() as Record<string, unknown>),
+        id: d.id,
+      })) as unknown as AdminAccount[];
+      const cleanAdmins = rawAdmins.filter(
+        (a) => !LEGACY_ADMIN_IDS.includes(a.id) && a.id !== PRIMARY_ADMIN_ID
+      );
+
+      let nextQuestions: Question[] | null = null;
+      let nextResults: ExamResult[] | null = null;
+      if (heavySnaps) {
+        const [qSnap, rSnap] = heavySnaps;
+        if (!qSnap.empty || hadCloudDocsRef.current.questions || cloudSeededConfirmRef.current) {
+          if (!qSnap.empty) hadCloudDocsRef.current.questions = true;
+          nextQuestions = filterServerCol('questions', qSnap.docs).map((d) => ({
+            ...d,
+            pertanyaanHtml: String(d.pertanyaanHtml || ''),
+            opsi: Array.isArray(d.opsi) ? d.opsi.map((o) => String(o || '')) : [],
+            kunciJawaban: Array.isArray(d.kunciJawaban) ? d.kunciJawaban.map((k) => String(k || '')) : [],
+          })) as unknown as Question[];
+        }
+        if (!rSnap.empty || hadCloudDocsRef.current.results || cloudSeededConfirmRef.current) {
+          if (!rSnap.empty) hadCloudDocsRef.current.results = true;
+          nextResults = filterServerCol('results', rSnap.docs).map((d) => ({
+            ...d,
+            jawabanDetail: Array.isArray(d.jawabanDetail) ? d.jawabanDetail : [],
+            status: d.status === 'Pelanggaran' ? 'Pelanggaran' : 'Selesai',
+          })) as unknown as ExamResult[];
+        }
+      }
+
+      setState((prev) => {
+        const next: CbtDatabaseState = {
+          ...prev,
+          subjects: nextSubjects ?? prev.subjects,
+          classes: nextClasses ?? prev.classes,
+          teachers: nextTeachers ?? prev.teachers,
+          admins: [primaryAdmin, ...cleanAdmins],
+          exams: nextExams ?? prev.exams,
+          questions: nextQuestions ?? prev.questions,
+          results: nextResults ?? prev.results,
+        };
+        saveLocalState(next);
+        try {
+          bcRef.current?.postMessage({ type: 'SYNC_STATE', payload: next });
+        } catch {
+          // Ignore broadcast errors
+        }
+        return next;
+      });
+
       await waitForCloudAck(4000);
       const nowIso = new Date().toISOString();
-      const summary = 'Sinkronisasi manual terverifikasi dengan database pusat';
+      const summary = 'Sinkronisasi manual & tarik data pusat selesai';
       setCloudConnected(true);
+      setConnectionPhase('connected');
+      setConnectionError(null);
+      setHasConfirmedCloudSync(true);
       setLastSyncedAt(nowIso);
       setLastSyncSummary(summary);
       broadcastSyncMeta({
@@ -838,7 +985,7 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
       recordSyncLog({
         status: 'Berhasil',
         summary,
-        details: 'Verifikasi koneksi & penulisan tertunda ke Cloud Firestore selesai',
+        details: 'Antrean lokal terkirim & seluruh data terbaru ditarik dari Cloud Firestore',
         collection: 'settings',
         publishPulse: true,
       });
@@ -848,7 +995,7 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
       recordSyncLog({
         status: 'Gagal',
         summary: 'Verifikasi sinkronisasi manual gagal',
-        details: 'Gagal memverifikasi sambungan ke Cloud Firestore',
+        details: 'Gagal memverifikasi atau menarik data terbaru dari Cloud Firestore',
         collection: 'settings',
         errorMessage: msg,
       });
@@ -911,6 +1058,14 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
             ...d,
             kelasTarget: Array.isArray(d.kelasTarget) ? d.kelasTarget : ['Semua Kelas'],
             questionsSnapshot: Array.isArray(d.questionsSnapshot) ? d.questionsSnapshot : [],
+          };
+        }
+        if (colName === 'questions') {
+          return {
+            ...d,
+            pertanyaanHtml: String(d.pertanyaanHtml || ''),
+            opsi: Array.isArray(d.opsi) ? d.opsi.map((o) => String(o || '')) : [],
+            kunciJawaban: Array.isArray(d.kunciJawaban) ? d.kunciJawaban.map((k) => String(k || '')) : [],
           };
         }
         return d;
@@ -1049,6 +1204,11 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
             exams: nextExams ?? prev.exams,
           };
           saveLocalState(next);
+          try {
+            bcRef.current?.postMessage({ type: 'SYNC_STATE', payload: next });
+          } catch {
+            // Ignore broadcast errors
+          }
           return next;
         });
 
@@ -1216,9 +1376,18 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
         saveLocalState(stateRef.current);
       }
     };
+    const onFocusOrVisible = () => {
+      if (document.visibilityState === 'hidden') return;
+      if (typeof navigator !== 'undefined' && !navigator.onLine) return;
+      if (pendingQueueRef.current.length > 0) {
+        void flushPendingQueue();
+      }
+    };
     window.addEventListener('storage', onStorageSync);
     window.addEventListener('online', onOnline);
     window.addEventListener('offline', onOffline);
+    window.addEventListener('focus', onFocusOrVisible);
+    document.addEventListener('visibilitychange', onFocusOrVisible);
     window.addEventListener('beforeunload', onBeforeUnload);
 
     const retryIntervalId = window.setInterval(() => {
@@ -1249,6 +1418,7 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
               setCloudConnected(true);
               setConnectionPhase('connected');
               setConnectionError(null);
+              setSyncError(null);
               setRetryAttempt(0);
               setHasConfirmedCloudSync(true);
               if (autoRetryTimerRef.current !== null) {
@@ -1507,6 +1677,8 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
       window.removeEventListener('storage', onStorageSync);
       window.removeEventListener('online', onOnline);
       window.removeEventListener('offline', onOffline);
+      window.removeEventListener('focus', onFocusOrVisible);
+      document.removeEventListener('visibilitychange', onFocusOrVisible);
       window.removeEventListener('beforeunload', onBeforeUnload);
     };
   }, [flushPendingQueue, refreshPendingSnapshotFlag, scheduleSaveLocalState]);
@@ -1535,6 +1707,7 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
             }
             if (!snap.metadata.fromCache) {
               setCloudConnected(true);
+              setSyncError(null);
               if (colName !== 'live_streams' && !snap.metadata.hasPendingWrites) {
                 setLastSyncedAt(new Date().toISOString());
               }
@@ -1564,6 +1737,16 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
                   ...d,
                   jawabanDetail: Array.isArray(d.jawabanDetail) ? d.jawabanDetail : [],
                   status: d.status === 'Pelanggaran' ? 'Pelanggaran' : 'Selesai',
+                };
+              }
+              if (colName === 'questions') {
+                return {
+                  ...d,
+                  pertanyaanHtml: String(d.pertanyaanHtml || ''),
+                  opsi: Array.isArray(d.opsi) ? d.opsi.map((o) => String(o || '')) : [],
+                  kunciJawaban: Array.isArray(d.kunciJawaban)
+                    ? d.kunciJawaban.map((k) => String(k || ''))
+                    : [],
                 };
               }
               return d;

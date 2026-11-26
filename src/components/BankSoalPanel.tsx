@@ -225,6 +225,8 @@ export const BankSoalPanel: React.FC<BankSoalPanelProps> = ({
   const [kunciJawaban, setKunciJawaban] = useState<string[]>(['A']);
   const [bobot, setBobot] = useState<number>(10);
   const [showConfirmClear, setShowConfirmClear] = useState(false);
+  const [editorError, setEditorError] = useState<string | null>(null);
+  const [savingQuestion, setSavingQuestion] = useState(false);
 
   const richRef = useRef<HTMLDivElement | null>(null);
 
@@ -235,6 +237,7 @@ export const BankSoalPanel: React.FC<BankSoalPanelProps> = ({
     setOpsi(['', '', '', '']);
     setKunciJawaban(['A']);
     setBobot(10);
+    setEditorError(null);
     setShowEditor(true);
     window.setTimeout(() => {
       if (richRef.current) richRef.current.innerHTML = '';
@@ -254,6 +257,7 @@ export const BankSoalPanel: React.FC<BankSoalPanelProps> = ({
     setOpsi(q.opsi.length > 0 ? [...q.opsi] : ['', '', '', '']);
     setKunciJawaban([...q.kunciJawaban]);
     setBobot(q.bobot || 10);
+    setEditorError(null);
     setShowEditor(true);
     window.setTimeout(() => {
       if (richRef.current) richRef.current.innerHTML = q.pertanyaanHtml;
@@ -359,8 +363,19 @@ export const BankSoalPanel: React.FC<BankSoalPanelProps> = ({
 
   const handleSaveQuestion = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (savingQuestion) return;
+    setEditorError(null);
+
     const htmlContent = (richRef.current?.innerHTML || pertanyaanHtml).trim();
-    if (!htmlContent || htmlContent === '<br>') return;
+    const plainText = htmlContent
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/gi, ' ')
+      .trim();
+    const hasVisualMedia = /<(img|table|svg)\b/i.test(htmlContent);
+    if (!plainText && !hasVisualMedia) {
+      setEditorError('Teks pertanyaan atau gambar/tabel wajib diisi.');
+      return;
+    }
 
     const cleanBobot = Number.isFinite(bobot) && bobot > 0 ? Math.min(100, Math.round(bobot)) : 10;
 
@@ -371,31 +386,57 @@ export const BankSoalPanel: React.FC<BankSoalPanelProps> = ({
           ? []
           : opsi.map((o) => o.trim()).filter(Boolean);
 
-    if (editingId) {
-      const existing = questions.find((q) => q.id === editingId);
-      if (existing) {
-        await onUpdateQuestion({
-          ...existing,
+    let cleanKunci = kunciJawaban;
+    if (tipe === 'PG' || tipe === 'PG_KOMPLEKS') {
+      if (cleanOpsi.length < 2) {
+        setEditorError('Minimal harus ada 2 pilihan jawaban yang terisi.');
+        return;
+      }
+      const validLetters = cleanOpsi.map((_, i) => getOptionLetter(i));
+      cleanKunci = kunciJawaban.filter((k) => validLetters.includes(k));
+      if (cleanKunci.length === 0) {
+        setEditorError('Pilih minimal 1 kunci jawaban pada opsi yang terisi.');
+        return;
+      }
+    } else if (tipe === 'BENAR_SALAH') {
+      cleanKunci = kunciJawaban[0] === 'Salah' ? ['Salah'] : ['Benar'];
+    } else {
+      const rubric = (kunciJawaban[0] || '').trim();
+      cleanKunci = rubric ? [rubric] : [];
+    }
+
+    setSavingQuestion(true);
+    try {
+      if (editingId) {
+        const existing = questions.find((q) => q.id === editingId);
+        if (existing) {
+          await onUpdateQuestion({
+            ...existing,
+            mataPelajaran: activeSubject,
+            tipe,
+            pertanyaanHtml: htmlContent,
+            opsi: cleanOpsi,
+            kunciJawaban: cleanKunci,
+            bobot: cleanBobot,
+          });
+        }
+      } else {
+        await onAddQuestion({
           mataPelajaran: activeSubject,
           tipe,
           pertanyaanHtml: htmlContent,
           opsi: cleanOpsi,
-          kunciJawaban,
+          kunciJawaban: cleanKunci,
           bobot: cleanBobot,
+          createdBy: teacherName,
         });
       }
-    } else {
-      await onAddQuestion({
-        mataPelajaran: activeSubject,
-        tipe,
-        pertanyaanHtml: htmlContent,
-        opsi: cleanOpsi,
-        kunciJawaban,
-        bobot: cleanBobot,
-        createdBy: teacherName,
-      });
+      setShowEditor(false);
+    } catch (err) {
+      setEditorError(err instanceof Error ? err.message : 'Gagal menyimpan soal ke database.');
+    } finally {
+      setSavingQuestion(false);
     }
-    setShowEditor(false);
   };
 
   const toggleComplexKey = (letter: string) => {
@@ -792,16 +833,34 @@ export const BankSoalPanel: React.FC<BankSoalPanelProps> = ({
                         </span>
                         <input
                           type="text"
-                          required
+                          required={idx < 2}
                           value={val}
                           onChange={(e) => {
                             const next = [...opsi];
                             next[idx] = e.target.value;
                             setOpsi(next);
                           }}
-                          placeholder={`Teks pilihan ${letter}`}
+                          placeholder={`Teks pilihan ${letter}${idx >= 4 ? ' (opsional)' : ''}`}
                           className="glass-input flex-1 rounded-xl px-3 py-1.5 text-sm text-slate-900"
                         />
+                        {idx >= 2 && opsi.length > 2 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const nextOpsi = opsi.filter((_, oIdx) => oIdx !== idx);
+                              setOpsi(nextOpsi);
+                              const validNext = nextOpsi.map((_, i) => getOptionLetter(i));
+                              setKunciJawaban((prev) => {
+                                const kept = prev.filter((k) => validNext.includes(k));
+                                return kept.length > 0 ? kept : [validNext[0]];
+                              });
+                            }}
+                            aria-label={`Hapus opsi ${letter}`}
+                            className="btn-press rounded-lg p-1.5 text-slate-400 hover:bg-red-500/10 hover:text-red-600"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        )}
                       </div>
                     );
                   })}
@@ -847,21 +906,30 @@ export const BankSoalPanel: React.FC<BankSoalPanelProps> = ({
                   />
                 </div>
               )}
+
+              {editorError && (
+                <div className="rounded-xl border border-red-300/70 bg-red-500/15 px-3.5 py-2 text-xs font-medium text-red-900">
+                  {editorError}
+                </div>
+              )}
             </div>
 
             <div className="flex justify-end gap-2 border-t border-white/50 bg-white/35 px-5 py-3.5">
               <button
                 type="button"
+                disabled={savingQuestion}
                 onClick={() => setShowEditor(false)}
-                className="btn-press rounded-xl border border-white/65 bg-white/60 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-white/85"
+                className="btn-press rounded-xl border border-white/65 bg-white/60 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-white/85 disabled:opacity-50"
               >
                 Batal
               </button>
               <button
                 type="submit"
-                className="btn-press rounded-xl bg-emerald-700 px-5 py-2 text-xs font-semibold text-white hover:bg-emerald-800 shadow-sm"
+                disabled={savingQuestion}
+                className="btn-press inline-flex items-center gap-1.5 rounded-xl bg-emerald-700 px-5 py-2 text-xs font-semibold text-white hover:bg-emerald-800 shadow-sm disabled:opacity-60"
               >
-                Simpan ke Bank Soal
+                {savingQuestion && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                <span>{savingQuestion ? 'Menyimpan...' : 'Simpan ke Bank Soal'}</span>
               </button>
             </div>
           </form>

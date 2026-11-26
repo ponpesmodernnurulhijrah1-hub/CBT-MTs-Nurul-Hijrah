@@ -29,9 +29,7 @@ export function usePerformanceProfiler(): void {
     const root = document.documentElement;
     const initialTier = readInitialTier();
     const initialLevel = mapDeviceTierToProfilerLevel(initialTier);
-    // Allow recovery up to at least 'balanced' on mobile, or 'ultra' on capable desktop
-    const ceilingLevel: ProfilerQualityLevel =
-      initialLevel === 'low' ? 'balanced' : initialLevel;
+    const ceilingLevel: ProfilerQualityLevel = initialLevel;
 
     let state: FpsProfilerState = {
       level: initialLevel,
@@ -56,7 +54,7 @@ export function usePerformanceProfiler(): void {
       frameCount += 1;
       const elapsedMs = now - windowStartMs;
 
-      if (elapsedMs >= 1200) {
+      if (elapsedMs >= 1000) {
         const measuredFps = (frameCount * 1000) / elapsedMs;
         const { nextState, changed } = evaluateFpsProfilerWindow(
           state,

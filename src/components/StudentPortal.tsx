@@ -171,13 +171,14 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
     stage === 'exam' ? navFilter : null,
     `${examQuestions.length}-${navFilter}`
   );
+  const hasValidAnswer = (vals?: string[]) => Boolean(vals?.some((v) => v.trim().length > 0));
   const isCurrentInFilteredGrid =
     stage === 'exam' &&
     examQuestions[currentIdx] !== undefined &&
     (() => {
       const cq = examQuestions[currentIdx];
       if (!cq) return false;
-      const isAns = (answersMap[cq.id]?.length || 0) > 0;
+      const isAns = hasValidAnswer(answersMap[cq.id]);
       const isDoubt = Boolean(doubtfulMap[cq.id]);
       if (navFilter === 'UNANSWERED') return !isAns;
       if (navFilter === 'DOUBTFUL') return isDoubt;
@@ -1545,7 +1546,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
   const currentQ = examQuestions[currentIdx];
   const mins = Math.floor(remainingSeconds / 60);
   const secs = remainingSeconds % 60;
-  const answeredCount = examQuestions.filter((q) => (answersMap[q.id]?.length || 0) > 0).length;
+  const answeredCount = examQuestions.filter((q) => hasValidAnswer(answersMap[q.id])).length;
   const doubtfulCount = examQuestions.filter((q) => Boolean(doubtfulMap[q.id])).length;
   const unansweredCount = examQuestions.length - answeredCount;
   const progressPercent =
@@ -1554,7 +1555,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
   const filteredNavItems = examQuestions
     .map((q, idx) => ({ q, idx }))
     .filter(({ q }) => {
-      const isAnswered = (answersMap[q.id]?.length || 0) > 0;
+      const isAnswered = hasValidAnswer(answersMap[q.id]);
       const isDoubtful = Boolean(doubtfulMap[q.id]);
       if (navFilter === 'UNANSWERED') return !isAnswered;
       if (navFilter === 'DOUBTFUL') return isDoubtful;
@@ -1580,10 +1581,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
   return (
     <>
       {persistentAudioElement}
-      <main
-        data-shared-morph="true"
-        className="mx-auto max-w-7xl px-4 sm:px-6 py-5 select-none panel-enter"
-      >
+      <main className="mx-auto max-w-7xl px-4 sm:px-6 py-5 select-none panel-enter">
         {/* Hidden canvas for lightweight proctor preview snapshot */}
         <canvas ref={snapshotCanvasRef} className="hidden" />
 
@@ -2118,7 +2116,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                     />
                   </div>
                   {filteredNavItems.map(({ q, idx }) => {
-                    const isAnswered = (answersMap[q.id]?.length || 0) > 0;
+                    const isAnswered = hasValidAnswer(answersMap[q.id]);
                     const isDoubtful = Boolean(doubtfulMap[q.id]);
                     const isCurrent = idx === currentIdx;
 
@@ -2195,7 +2193,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
                   onClick={() => {
                     setShowConfirmSubmit(false);
                     setNavFilter('UNANSWERED');
-                    const firstBlank = examQuestions.findIndex((q) => (answersMap[q.id]?.length || 0) === 0);
+                    const firstBlank = examQuestions.findIndex((q) => !hasValidAnswer(answersMap[q.id]));
                     if (firstBlank >= 0) setCurrentIdx(firstBlank);
                   }}
                   className="btn-press rounded-2xl border border-white/70 bg-white/55 p-3 text-center hover:bg-white/85"

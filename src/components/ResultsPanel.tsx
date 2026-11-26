@@ -58,6 +58,8 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({
   const [essayScoreInput, setEssayScoreInput] = useState<number>(0);
   const [aiGradingLoading, setAiGradingLoading] = useState(false);
   const [aiGradingNote, setAiGradingNote] = useState<string | null>(null);
+  const [savingEssay, setSavingEssay] = useState(false);
+  const [saveEssayError, setSaveEssayError] = useState<string | null>(null);
 
   const effectiveFilterMapel = lockedSubject
     ? lockedSubject
@@ -105,19 +107,25 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({
     setEditingResult(r);
     setEssayScoreInput(r.skorEsai);
     setAiGradingNote(null);
+    setSaveEssayError(null);
   };
 
-  const relatedExam = editingResult
-    ? exams.find((e) => e.id === editingResult.examId)
+  const liveEditingResult = useMemo(
+    () => (editingResult ? results.find((r) => r.id === editingResult.id) ?? editingResult : null),
+    [editingResult, results]
+  );
+
+  const relatedExam = liveEditingResult
+    ? exams.find((e) => e.id === liveEditingResult.examId)
     : undefined;
-  const editingViolations = editingResult
-    ? getViolationHistoryForResult(editingResult)
+  const editingViolations = liveEditingResult
+    ? getViolationHistoryForResult(liveEditingResult)
     : [];
-  const editingHasEssay = Boolean(editingResult?.jawabanDetail.some((d) => d.tipe === 'ESAI'));
+  const editingHasEssay = Boolean(liveEditingResult?.jawabanDetail.some((d) => d.tipe === 'ESAI'));
 
   const handleSuggestEssayScoreAI = async () => {
-    if (!editingResult || aiGradingLoading) return;
-    const essayDetails = editingResult.jawabanDetail.filter((d) => d.tipe === 'ESAI');
+    if (!liveEditingResult || aiGradingLoading) return;
+    const essayDetails = liveEditingResult.jawabanDetail.filter((d) => d.tipe === 'ESAI');
     if (essayDetails.length === 0) return;
 
     setAiGradingLoading(true);
@@ -128,7 +136,7 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({
       const items = essayDetails.map((ans) => {
         const snap = relatedExam?.questionsSnapshot.find((q) => q.id === ans.questionId);
         return {
-          questionHtml: snap?.pertanyaanHtml || `Soal Esai (${editingResult.mataPelajaran})`,
+          questionHtml: snap?.pertanyaanHtml || `Soal Esai (${liveEditingResult.mataPelajaran})`,
           rubric: snap?.kunciJawaban?.join('; ') || '',
           studentAnswer: ans.jawaban.join(' ') || '',
           bobot: snap?.bobot || 20,
@@ -139,7 +147,7 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({
         headers: { 'Content-Type': 'application/json' },
         signal: controller.signal,
         body: JSON.stringify({
-          mataPelajaran: editingResult.mataPelajaran,
+          mataPelajaran: liveEditingResult.mataPelajaran,
           items,
         }),
       });
@@ -163,15 +171,25 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({
   };
 
   const saveEssayGrade = async () => {
-    if (!editingResult) return;
-    const { skorEsai, nilaiAkhir } = recalculateResultWithEssayScore(
-      editingResult,
-      relatedExam?.questionsSnapshot,
-      essayScoreInput
-    );
-    await onUpdateEssayScore(editingResult.id, skorEsai, nilaiAkhir);
-    setEditingResult(null);
-    setAiGradingNote(null);
+    if (!liveEditingResult || savingEssay) return;
+    setSavingEssay(true);
+    setSaveEssayError(null);
+    try {
+      const { skorEsai, nilaiAkhir } = recalculateResultWithEssayScore(
+        liveEditingResult,
+        relatedExam?.questionsSnapshot,
+        essayScoreInput
+      );
+      await onUpdateEssayScore(liveEditingResult.id, skorEsai, nilaiAkhir);
+      setEditingResult(null);
+      setAiGradingNote(null);
+    } catch (err) {
+      setSaveEssayError(
+        err instanceof Error ? err.message : 'Gagal menyimpan nilai esai ke server.'
+      );
+    } finally {
+      setSavingEssay(false);
+    }
   };
 
   return (
@@ -500,7 +518,7 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({
       </div>
 
       {/* Essay & Detail Modal */}
-      {editingResult && (
+      {liveEditingResult && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-md"
           role="dialog"
@@ -510,17 +528,18 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({
             <div className="flex items-center justify-between border-b border-white/55 px-5 py-4">
               <div>
                 <h3 className="font-display text-base font-bold text-slate-900">
-                  Detail Jawaban &amp; Koreksi Esai: {editingResult.namaSiswa}
+                  Detail Jawaban &amp; Koreksi Esai: {liveEditingResult.namaSiswa}
                 </h3>
                 <p className="text-xs text-slate-500">
-                  {editingResult.kelas} · {editingResult.mataPelajaran} · Status:{' '}
-                  {editingResult.status === 'Selesai' ? 'Selesai (Normal)' : 'Pelanggaran'}
+                  {liveEditingResult.kelas} · {liveEditingResult.mataPelajaran} · Status:{' '}
+                  {liveEditingResult.status === 'Selesai' ? 'Selesai (Normal)' : 'Pelanggaran'}
                 </p>
               </div>
               <button
                 type="button"
+                disabled={savingEssay}
                 onClick={() => setEditingResult(null)}
-                className="btn-press rounded-xl p-1.5 text-slate-500 hover:bg-white/60"
+                className="btn-press rounded-xl p-1.5 text-slate-500 hover:bg-white/60 disabled:opacity-50"
               >
                 <X className="h-5 w-5" />
               </button>
@@ -530,7 +549,7 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({
               {/* Teacher Post-Exam Violation History Review Section */}
               <div
                 className={`rounded-2xl border p-4 backdrop-blur-sm ${
-                  editingViolations.length > 0 || editingResult.pelanggaranTab > 0
+                  editingViolations.length > 0 || liveEditingResult.pelanggaranTab > 0
                     ? 'border-red-300/60 bg-red-500/10'
                     : 'border-emerald-300/60 bg-emerald-500/10'
                 }`}
@@ -540,7 +559,7 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({
                   <h4 className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-900">
                     <ShieldAlert
                       className={`h-4 w-4 ${
-                        editingViolations.length > 0 || editingResult.pelanggaranTab > 0
+                        editingViolations.length > 0 || liveEditingResult.pelanggaranTab > 0
                           ? 'text-red-600'
                           : 'text-emerald-700'
                       }`}
@@ -548,19 +567,19 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({
                     <span>Riwayat Pelanggaran Selama Ujian</span>
                   </h4>
                   <span className="font-mono-tabular text-[11px] font-semibold text-slate-600">
-                    Total Keluar: {editingResult.pelanggaranTab}x
+                    Total Keluar: {liveEditingResult.pelanggaranTab}x
                   </span>
                 </div>
 
-                {editingResult.alasanSubmit && (
+                {liveEditingResult.alasanSubmit && (
                   <p className="text-xs text-slate-600 mb-2">
-                    <strong>Catatan Pengumpulan:</strong> {editingResult.alasanSubmit}
+                    <strong>Catatan Pengumpulan:</strong> {liveEditingResult.alasanSubmit}
                   </p>
                 )}
 
                 {editingViolations.length === 0 ? (
                   <p className="text-xs text-emerald-800">
-                    {editingResult.pelanggaranTab > 0
+                    {liveEditingResult.pelanggaranTab > 0
                       ? 'Tercatat pelanggaran keluar aplikasi, rincian log lokal tidak tersedia.'
                       : 'Tidak ada pelanggaran keluar aplikasi selama sesi ujian ini.'}
                   </p>
@@ -601,7 +620,7 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({
                 )}
               </div>
 
-              {editingResult.jawabanDetail.map((ans, idx) => {
+              {liveEditingResult.jawabanDetail.map((ans, idx) => {
                 const q = relatedExam?.questionsSnapshot.find((item) => item.id === ans.questionId);
                 return (
                   <div key={ans.questionId + idx} className="glass-subtle rounded-2xl p-3.5">
@@ -651,7 +670,7 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({
                     />
                     <button
                       type="button"
-                      disabled={aiGradingLoading}
+                      disabled={aiGradingLoading || savingEssay}
                       onClick={handleSuggestEssayScoreAI}
                       className="btn-press inline-flex items-center gap-1.5 rounded-xl border border-emerald-300/70 bg-emerald-500/15 px-3 py-1.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-500/25 disabled:opacity-50"
                     >
@@ -666,6 +685,9 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({
                   {aiGradingNote && (
                     <p className="text-[11px] text-emerald-800 max-w-md">{aiGradingNote}</p>
                   )}
+                  {saveEssayError && (
+                    <p className="text-[11px] font-medium text-red-700 max-w-md">{saveEssayError}</p>
+                  )}
                 </div>
               ) : (
                 <p className="text-xs text-slate-500">
@@ -675,18 +697,21 @@ export const ResultsPanel: React.FC<ResultsPanelProps> = ({
               <div className="flex items-center gap-2">
                 <button
                   type="button"
+                  disabled={savingEssay}
                   onClick={() => setEditingResult(null)}
-                  className="btn-press rounded-xl border border-white/65 bg-white/60 px-3.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-white/85"
+                  className="btn-press rounded-xl border border-white/65 bg-white/60 px-3.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-white/85 disabled:opacity-50"
                 >
                   Tutup
                 </button>
                 {editingHasEssay && (
                   <button
                     type="button"
+                    disabled={savingEssay}
                     onClick={saveEssayGrade}
-                    className="btn-press rounded-xl bg-emerald-700 px-4 py-1.5 text-xs font-semibold text-white hover:bg-emerald-800 shadow-sm"
+                    className="btn-press inline-flex items-center gap-1.5 rounded-xl bg-emerald-700 px-4 py-1.5 text-xs font-semibold text-white hover:bg-emerald-800 shadow-sm disabled:opacity-60"
                   >
-                    Simpan Nilai Esai
+                    {savingEssay && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+                    <span>{savingEssay ? 'Menyimpan...' : 'Simpan Nilai Esai'}</span>
                   </button>
                 )}
               </div>

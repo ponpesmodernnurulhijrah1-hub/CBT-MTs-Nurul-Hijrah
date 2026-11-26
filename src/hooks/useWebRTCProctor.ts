@@ -59,6 +59,7 @@ export function useStudentWebRTCPublisher(params: {
             {
               offerSdp: JSON.stringify(offer),
               studentIceCandidates: [],
+              proctorIceCandidates: [],
             },
             { merge: true }
           ).catch(() => {});

@@ -48,10 +48,10 @@ export function resolveProfilerFilterSettings(
   if (level === 'low') {
     return {
       level: 'low',
-      blurRadiusPx: 6,
-      modalBlurRadiusPx: 8,
-      saturatePercent: 140,
-      contrastPercent: 100,
+      blurRadiusPx: 8,
+      modalBlurRadiusPx: 10,
+      saturatePercent: 145,
+      contrastPercent: 102,
       auroraOpacity: 0.36,
       particlesEnabled: false,
       svgRefractEnabled: false,
@@ -62,7 +62,7 @@ export function resolveProfilerFilterSettings(
       level: 'balanced',
       blurRadiusPx: 16,
       modalBlurRadiusPx: 18,
-      saturatePercent: 195,
+      saturatePercent: 190,
       contrastPercent: 104,
       auroraOpacity: 0.48,
       particlesEnabled: true,
@@ -71,20 +71,20 @@ export function resolveProfilerFilterSettings(
   }
   return {
     level: 'ultra',
-    blurRadiusPx: 40,
-    modalBlurRadiusPx: 40,
-    saturatePercent: 240,
+    blurRadiusPx: 24,
+    modalBlurRadiusPx: 26,
+    saturatePercent: 215,
     contrastPercent: 106,
-    auroraOpacity: 0.58,
+    auroraOpacity: 0.56,
     particlesEnabled: true,
-    svgRefractEnabled: true,
+    svgRefractEnabled: false,
   };
 }
 
 /**
- * Evaluates a rolling FPS sampling window (~1.2s) with asymmetric hysteresis:
- * - Rapidly steps down when sustained FPS drops (or immediately on severe stall < 22/30 FPS)
- * - Gradually steps back up when FPS recovers smoothly, bounded by `maxCeilingLevel`
+ * Evaluates a rolling 1-second FPS sampling window:
+ * - Steps intensity down smoothly whenever FPS remains < 45 FPS for 2 consecutive seconds
+ * - Gradually steps back up when FPS recovers cleanly, bounded by `maxCeilingLevel`
  */
 export function evaluateFpsProfilerWindow(
   currentState: FpsProfilerState,
@@ -101,11 +101,7 @@ export function evaluateFpsProfilerWindow(
   let highStreak = currentState.highStreak;
 
   if (currentState.level === 'ultra') {
-    if (fps < 30) {
-      nextLevel = 'balanced';
-      lowStreak = 0;
-      highStreak = 0;
-    } else if (fps < 46) {
+    if (fps < 45) {
       lowStreak += 1;
       highStreak = 0;
       if (lowStreak >= 2) {
@@ -116,11 +112,7 @@ export function evaluateFpsProfilerWindow(
       lowStreak = 0;
     }
   } else if (currentState.level === 'balanced') {
-    if (fps < 22) {
-      nextLevel = 'low';
-      lowStreak = 0;
-      highStreak = 0;
-    } else if (fps < 34) {
+    if (fps < 45) {
       lowStreak += 1;
       highStreak = 0;
       if (lowStreak >= 2) {
@@ -140,7 +132,7 @@ export function evaluateFpsProfilerWindow(
     }
   } else {
     // Currently in 'low'
-    if (fps >= 46 && LEVEL_RANK[maxCeilingLevel] >= LEVEL_RANK.balanced) {
+    if (fps >= 52 && LEVEL_RANK[maxCeilingLevel] >= LEVEL_RANK.balanced) {
       lowStreak = 0;
       highStreak += 1;
       if (highStreak >= 4) {

@@ -203,10 +203,10 @@ export const LivingFluidCanvas: React.FC<LivingFluidCanvasProps> = ({ zenFocus =
               depth: false,
               stencil: false,
               powerPreference: activeTier === 'lite' ? 'low-power' : 'default',
-              preserveDrawingBuffer: true,
+              preserveDrawingBuffer: false,
             }) as WebGLRenderingContext | null) ||
             (canvas.getContext('experimental-webgl', {
-              preserveDrawingBuffer: true,
+              preserveDrawingBuffer: false,
             }) as WebGLRenderingContext | null))
           : null;
 
@@ -351,14 +351,14 @@ export const LivingFluidCanvas: React.FC<LivingFluidCanvasProps> = ({ zenFocus =
       const baseDpr = window.devicePixelRatio || 1;
       const tierScale = gl
         ? activeTier === 'high'
-          ? Math.min(1.0, baseDpr)
+          ? Math.min(3, Math.max(1, baseDpr))
           : activeTier === 'balanced'
-            ? 0.45
-            : 0.28
+            ? Math.min(2, Math.max(1.5, baseDpr))
+            : Math.min(1, baseDpr)
         : activeTier === 'high'
-          ? 0.4
+          ? 0.45
           : activeTier === 'balanced'
-            ? 0.28
+            ? 0.3
             : 0.2;
       const width = Math.max(1, Math.round(window.innerWidth * tierScale));
       const height = Math.max(1, Math.round(window.innerHeight * tierScale));

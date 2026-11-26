@@ -133,13 +133,14 @@ test('computeRippleMetrics sizes expanding ripple to reach farthest corner of ta
   assert.ok(edgeRipple.diameter >= Math.ceil(Math.hypot(100, 40) * 2));
 });
 
-test('resolveMotionProfileForTier preserves all 3D & fluid effects across mobile tiers while scaling GPU budgets', () => {
+test('resolveMotionProfileForTier preserves liquid fluid effects across tiers while keeping cards calm without 3D tilt', () => {
   const lite = resolveMotionProfileForTier('lite');
   assert.equal(lite.enableLiquidRipple, true);
   assert.equal(lite.enableMagneticPull, true);
   assert.equal(lite.enableSpotlightMove, true);
   assert.equal(lite.enableMorphStretch, true);
-  assert.equal(lite.enable3DTilt, true);
+  assert.equal(lite.enable3DTilt, false);
+  assert.equal(lite.maxTiltDeg, 0);
   assert.equal(lite.enableSharedMorph, true);
   assert.equal(lite.enableFluidSimulation, true);
   assert.ok(lite.fluidResolutionScale < 0.4);
@@ -151,13 +152,14 @@ test('resolveMotionProfileForTier preserves all 3D & fluid effects across mobile
   assert.equal(balanced.enableLiquidRipple, true);
   assert.equal(balanced.enableMagneticPull, true);
   assert.equal(balanced.enableAuroraParallax, true);
-  assert.equal(balanced.enable3DTilt, true);
+  assert.equal(balanced.enable3DTilt, false);
   assert.ok(balanced.fluidResolutionScale < 0.6);
 
   const high = resolveMotionProfileForTier('high');
   assert.equal(high.enableLiquidRipple, true);
   assert.equal(high.enableMagneticPull, true);
   assert.equal(high.enableAuroraParallax, true);
+  assert.equal(high.enable3DTilt, false);
   assert.equal(high.fluidResolutionScale, 1.0);
   assert.equal(high.fluidTargetFps, 60);
 });
