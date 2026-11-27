@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   GraduationCap,
   X,
@@ -96,9 +96,16 @@ export const TeacherTutorAssistant: React.FC<TeacherTutorAssistantProps> = ({
       text: 'Assalamu’alaikum Bapak/Ibu Guru! Saya Asisten Panduan CBT MTs Nurul Hijrah. Silakan pilih pertanyaan cepat di bawah atau ketik pertanyaan Anda.',
     },
   ]);
+  const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
 
   const askTutor = async (questionText: string, localFallback?: string) => {
-    if (!questionText.trim()) return;
+    if (!questionText.trim() || loading) return;
     const nextHistory = [...messages, { role: 'user' as const, text: questionText }];
     setMessages(nextHistory);
     setInput('');
@@ -109,17 +116,24 @@ export const TeacherTutorAssistant: React.FC<TeacherTutorAssistantProps> = ({
     }
 
     setLoading(true);
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const timeoutId = window.setTimeout(() => controller.abort(), 25_000);
 
     try {
       const res = await fetch('/api/gemini/tutor', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: questionText, history: nextHistory }),
+        signal: controller.signal,
       });
-      const { data } = await safeParseResponseJson<{ reply?: string }>(res);
+      const { data } = await safeParseResponseJson<{ reply?: string; error?: string }>(res);
       const replyText = data?.reply;
       if (res.ok && replyText) {
         setMessages((prev) => [...prev, { role: 'model', text: replyText }]);
+      } else if (data?.error) {
+        setMessages((prev) => [...prev, { role: 'model', text: data.error! }]);
       } else if (localFallback) {
         setMessages((prev) => [...prev, { role: 'model', text: localFallback }]);
       } else {
@@ -138,10 +152,11 @@ export const TeacherTutorAssistant: React.FC<TeacherTutorAssistantProps> = ({
           role: 'model',
           text:
             localFallback ||
-            'Panduan singkat: Tambahkan soal di Bank Soal atau Import .docx, lalu buat Jadwal Tes dan bagikan Token Ujian ke siswa.',
+            'Permintaan melebihi batas waktu atau server sedang sibuk. Panduan singkat: Tambahkan soal di Bank Soal atau Import .docx, lalu buat Jadwal Tes dan bagikan Token Ujian ke siswa.',
         },
       ]);
     } finally {
+      window.clearTimeout(timeoutId);
       setLoading(false);
     }
   };

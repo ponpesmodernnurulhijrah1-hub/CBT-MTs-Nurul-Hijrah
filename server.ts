@@ -32,6 +32,11 @@ import {
   type PetCharacterId,
   type PetClientAction,
 } from './src/utils/virtualPetUtils.ts';
+import {
+  AsyncSemaphore,
+  QueueFullError,
+  SlidingWindowRateLimiter,
+} from './src/utils/concurrencyUtils.ts';
 import { APP_VERSION } from './src/config/version.ts';
 import { computeRuntimeVersionManifest } from './buildHash.ts';
 
@@ -45,12 +50,21 @@ const PORT = 3000;
 
 app.use(express.json({ limit: '25mb' }));
 
+let cachedGeminiKey: string | null = null;
+let cachedGeminiClient: GoogleGenAI | null = null;
+
 function getGeminiClient(): GoogleGenAI | null {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
+    cachedGeminiKey = null;
+    cachedGeminiClient = null;
     return null;
   }
-  return new GoogleGenAI({
+  if (cachedGeminiClient && cachedGeminiKey === apiKey) {
+    return cachedGeminiClient;
+  }
+  cachedGeminiKey = apiKey;
+  cachedGeminiClient = new GoogleGenAI({
     apiKey,
     httpOptions: {
       headers: {
@@ -58,6 +72,39 @@ function getGeminiClient(): GoogleGenAI | null {
       },
     },
   });
+  return cachedGeminiClient;
+}
+
+const teacherAiSemaphore = new AsyncSemaphore(5, 40, 25_000);
+const interactiveAiSemaphore = new AsyncSemaphore(8, 80, 15_000);
+
+const teacherAiRateLimiter = new SlidingWindowRateLimiter(35, 60_000, 1000);
+const petAiRateLimiter = new SlidingWindowRateLimiter(20, 60_000, 2000);
+
+function getClientIp(req: express.Request): string {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string' && forwarded.trim()) {
+    return forwarded.split(',')[0].trim();
+  }
+  return req.ip || req.socket?.remoteAddress || 'unknown';
+}
+
+function enforceAiRateLimit(
+  req: express.Request,
+  res: express.Response,
+  limiter: SlidingWindowRateLimiter
+): boolean {
+  const result = limiter.consume(getClientIp(req));
+  if (!result.allowed) {
+    res.setHeader('Retry-After', String(result.retryAfterSec));
+    res.status(429).json({
+      code: 'CLIENT_RATE_LIMIT',
+      retryAfterSec: result.retryAfterSec,
+      error: `Terlalu banyak permintaan dalam waktu singkat. Coba lagi dalam ${result.retryAfterSec} detik.`,
+    });
+    return false;
+  }
+  return true;
 }
 
 const QUESTION_ARRAY_SCHEMA: Schema = {
@@ -151,6 +198,13 @@ function formatGeminiErrorMessage(err: unknown): {
       code: 'UNAVAILABLE',
       message:
         'Server AI Gemini sedang mengalami lonjakan trafik sementara. Silakan klik ulang dalam beberapa detik.',
+    };
+  }
+  if (err instanceof QueueFullError) {
+    return {
+      status: 503,
+      code: 'QUEUE_BUSY',
+      message: err.message || 'Antrean AI server sedang padat. Silakan coba lagi beberapa detik.',
     };
   }
   if (upper.includes('NOT_FOUND') || upper.includes('404')) {
@@ -252,7 +306,21 @@ function setCachedAiResponse(key: string, payload: unknown): void {
  * to avoid daily 20-request ceilings on `gemini-4-hydrogen`, with AbortSignal timeouts and
  * secondary model fallback only if the primary free-tier model is transiently unavailable.
  */
-async function callGeminiWithResilience(ai: GoogleGenAI, opts: ResilienceCallOptions) {
+async function callGeminiWithResilience(
+  ai: GoogleGenAI,
+  opts: ResilienceCallOptions,
+  lane: 'teacher' | 'interactive' = 'teacher'
+) {
+  const semaphore = lane === 'interactive' ? interactiveAiSemaphore : teacherAiSemaphore;
+  const release = await semaphore.acquire();
+  try {
+    return await executeGeminiWithResilience(ai, opts);
+  } finally {
+    release();
+  }
+}
+
+async function executeGeminiWithResilience(ai: GoogleGenAI, opts: ResilienceCallOptions) {
   const now = Date.now();
   const liteInBackoff = now < (modelBackoffUntilMs['gemini-3.1-flash-lite'] || 0);
   const hydrogenInBackoff = now < (modelBackoffUntilMs['gemini-4-hydrogen'] || 0);
@@ -358,21 +426,37 @@ async function callGeminiWithResilience(ai: GoogleGenAI, opts: ResilienceCallOpt
   throw lastErr;
 }
 
-function computeVersionSnapshot(): {
+const VERSION_SNAPSHOT_CACHE_TTL_MS = 5_000;
+const MAX_SSE_CLIENTS = 300;
+let cachedVersionSnapshot: ReturnType<typeof computeRuntimeVersionManifest> | null = null;
+let cachedVersionAtMs = 0;
+
+function computeVersionSnapshot(forceRefresh = false): {
   version: string;
   buildId: string;
   buildHash: string;
   schemaVersion: number;
   builtAt?: string;
 } {
-  return computeRuntimeVersionManifest(__dirname, process.env.NODE_ENV === 'production');
+  const now = Date.now();
+  if (
+    !forceRefresh &&
+    cachedVersionSnapshot &&
+    now - cachedVersionAtMs < VERSION_SNAPSHOT_CACHE_TTL_MS
+  ) {
+    return cachedVersionSnapshot;
+  }
+  const fresh = computeRuntimeVersionManifest(__dirname, process.env.NODE_ENV === 'production');
+  cachedVersionSnapshot = fresh;
+  cachedVersionAtMs = now;
+  return fresh;
 }
 
-let lastBroadcastSnapshot = computeVersionSnapshot();
+let lastBroadcastSnapshot = computeVersionSnapshot(true);
 const versionSseClients = new Set<express.Response>();
 
 function broadcastVersionChangeIfChanged() {
-  const next = computeVersionSnapshot();
+  const next = computeVersionSnapshot(true);
   if (
     next.version === lastBroadcastSnapshot.version &&
     next.buildHash === lastBroadcastSnapshot.buildHash
@@ -382,6 +466,10 @@ function broadcastVersionChangeIfChanged() {
   lastBroadcastSnapshot = next;
   const payload = `event: version\ndata: ${JSON.stringify(next)}\n\n`;
   for (const client of versionSseClients) {
+    if (client.writableEnded || client.destroyed) {
+      versionSseClients.delete(client);
+      continue;
+    }
     try {
       client.write(payload);
     } catch {
@@ -394,6 +482,7 @@ let watchDebounceTimer: NodeJS.Timeout | null = null;
 function scheduleVersionCheck(filename?: string | Buffer | null) {
   const name = filename ? String(filename) : '';
   if (name.endsWith('.test.ts') || name.endsWith('.test.tsx')) return;
+  cachedVersionAtMs = 0;
   if (watchDebounceTimer) clearTimeout(watchDebounceTimer);
   watchDebounceTimer = setTimeout(() => {
     broadcastVersionChangeIfChanged();
@@ -452,6 +541,11 @@ app.get('/api/version', sendVersionManifest);
 app.get('/version.json', sendVersionManifest);
 
 app.get('/api/version-stream', (req, res) => {
+  if (versionSseClients.size >= MAX_SSE_CLIENTS) {
+    res.status(503).json({ error: 'Terlalu banyak koneksi pemantau versi aktif.' });
+    return;
+  }
+
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-transform');
   res.setHeader('Connection', 'keep-alive');
@@ -463,6 +557,11 @@ app.get('/api/version-stream', (req, res) => {
 
   versionSseClients.add(res);
   const keepalive = setInterval(() => {
+    if (res.writableEnded || res.destroyed) {
+      clearInterval(keepalive);
+      versionSseClients.delete(res);
+      return;
+    }
     try {
       res.write(': keepalive\n\n');
     } catch {
@@ -491,6 +590,7 @@ app.get('/api/gemini/status', (_req, res) => {
 
 // Server-side Smart AI Multimodal Question Parser (HTML/Word/PDF/Images + Chunking + Auto-Solve)
 app.post('/api/gemini/parse-questions', async (req, res) => {
+  if (!enforceAiRateLimit(req, res, teacherAiRateLimiter)) return;
   try {
     const {
       content = '',
@@ -695,6 +795,7 @@ Aturan:
 
 // Server-side AI Automatic Question Generator for Teachers & Super Admin
 app.post('/api/gemini/generate-questions', async (req, res) => {
+  if (!enforceAiRateLimit(req, res, teacherAiRateLimiter)) return;
   try {
     const {
       topik,
@@ -773,6 +874,7 @@ Aturan Penulisan Wajib:
 
 // Server-side AI Question Enhancer (Verify/Auto-Solve Keys, Upgrade to HOTS, or Polish Formatting)
 app.post('/api/gemini/enhance-questions', async (req, res) => {
+  if (!enforceAiRateLimit(req, res, teacherAiRateLimiter)) return;
   try {
     const {
       questions = [],
@@ -894,6 +996,7 @@ ${JSON.stringify(sanitizedForAi)}`;
 
 // Server-side AI Essay Auto-Grading Assistant for Teachers & Super Admin
 app.post('/api/gemini/suggest-essay-score', async (req, res) => {
+  if (!enforceAiRateLimit(req, res, teacherAiRateLimiter)) return;
   try {
     const { mataPelajaran = 'Umum', items = [] } = req.body as {
       mataPelajaran?: string;
@@ -990,6 +1093,7 @@ const QUESTION_ANALYSIS_SCHEMA: Schema = {
 
 // Server-side Free-Tier AI Pedagogical Question Item Analyzer
 app.post('/api/gemini/analyze-questions', async (req, res) => {
+  if (!enforceAiRateLimit(req, res, teacherAiRateLimiter)) return;
   try {
     const { mataPelajaran = 'Umum', items = [] } = req.body as {
       mataPelajaran?: string;
@@ -1130,6 +1234,7 @@ ${JSON.stringify(batch)}`;
 
 // Server-side Interactive Teacher Guide Assistant using @google/genai (with resilience & cache)
 app.post('/api/gemini/tutor', async (req, res) => {
+  if (!enforceAiRateLimit(req, res, petAiRateLimiter)) return;
   try {
     const { message, history } = req.body as {
       message?: string;
@@ -1149,7 +1254,7 @@ app.post('/api/gemini/tutor', async (req, res) => {
       return;
     }
 
-    const trimmedMsg = message.trim();
+    const trimmedMsg = message.trim().slice(0, 1500);
     const tutorCacheKey = makeAiCacheKey('tutor', { trimmedMsg });
     if (!history || history.length <= 2) {
       const cachedReply = getCachedAiResponse<{ reply: string }>(tutorCacheKey);
@@ -1159,13 +1264,15 @@ app.post('/api/gemini/tutor', async (req, res) => {
       }
     }
 
-    const contextPrompt = (history || [])
+    const contextPrompt = (Array.isArray(history) ? history : [])
       .slice(-6)
-      .map((h) => `${h.role === 'user' ? 'Guru' : 'Asisten'}: ${h.text}`)
+      .map((h) => `${h.role === 'user' ? 'Guru' : 'Asisten'}: ${String(h.text || '').slice(0, 800)}`)
       .join('\n');
 
-    const { response } = await callGeminiWithResilience(ai, {
-      contents: contextPrompt ? `${contextPrompt}\nGuru: ${trimmedMsg}` : trimmedMsg,
+    const { response } = await callGeminiWithResilience(
+      ai,
+      {
+        contents: contextPrompt ? `${contextPrompt}\nGuru: ${trimmedMsg}` : trimmedMsg,
       systemInstruction: `Anda adalah "Asisten AI CBT MTs Nurul Hijrah", mentor yang sangat ramah, sabar, dan jelas untuk guru madrasah pemula.
 Jawab pertanyaan seputar cara menggunakan aplikasi CBT MTs Nurul Hijrah:
 1. Menu "Data Modul / Bank Soal": membuat soal Pilihan Ganda (A-E), Pilihan Ganda Kompleks (banyak jawaban benar), Benar/Salah, dan Esai, serta tombol merah "Kosongkan Bank Soal" yang aman karena jadwal tes menyimpan snapshot soal sendiri.
@@ -1174,7 +1281,9 @@ Jawab pertanyaan seputar cara menggunakan aplikasi CBT MTs Nurul Hijrah:
 4. Menu "Live Monitoring Ujian": pantau video & audio siswa secara langsung seperti Zoom (default bisu agar tidak tabrakan, klik Unmute untuk dengar satu siswa, Spotlight untuk perbesar, dan Kirim Peringatan untuk bunyikan alarm di layar siswa).
 5. Menu "Hasil Tes & Koreksi Esai": lihat nilai PG otomatis, gunakan "Saran Nilai Esai AI" atau input manual nilai Esai, tinjau riwayat pelanggaran keluar aplikasi, dan ekspor ke Excel/PDF.
 Gunakan bahasa Indonesia yang sopan, terstruktur dengan poin bernomor singkat, dan mudah diikuti guru pemula.`,
-    });
+      },
+      'interactive'
+    );
 
     const reply = response.text || 'Maaf, tidak ada jawaban yang dihasilkan.';
     if (!history || history.length <= 2) {
@@ -1375,6 +1484,7 @@ const PET_FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
 
 // Universal AI Virtual Pet Assistant endpoint supporting free-form Q&A + live app command execution
 app.post('/api/gemini/pet-assistant', async (req, res) => {
+  if (!enforceAiRateLimit(req, res, petAiRateLimiter)) return;
   try {
     const {
       message,
@@ -1403,21 +1513,25 @@ app.post('/api/gemini/pet-assistant', async (req, res) => {
 
     const activePet: PetCharacterId = isValidPetId(petType) ? petType : 'cat';
     const systemInstruction = buildPetSystemInstruction(activePet, appContext);
-    const trimmedMsg = message.trim();
+    const trimmedMsg = message.trim().slice(0, 1500);
 
     const conversationParts = [
       ...(Array.isArray(history) ? history.slice(-8) : []).map((h) => ({
         role: h.role === 'model' ? ('model' as const) : ('user' as const),
-        parts: [{ text: String(h.text || '') }],
+        parts: [{ text: String(h.text || '').slice(0, 800) }],
       })),
       { role: 'user' as const, parts: [{ text: trimmedMsg }] },
     ];
 
-    const { response: turn1, modelUsed } = await callGeminiWithResilience(ai, {
-      contents: conversationParts,
-      systemInstruction,
-      tools: [{ functionDeclarations: PET_FUNCTION_DECLARATIONS }],
-    });
+    const { response: turn1, modelUsed } = await callGeminiWithResilience(
+      ai,
+      {
+        contents: conversationParts,
+        systemInstruction,
+        tools: [{ functionDeclarations: PET_FUNCTION_DECLARATIONS }],
+      },
+      'interactive'
+    );
 
     const rawCalls = turn1.functionCalls || [];
     const clientActions: PetClientAction[] = normalizePetActions(
@@ -1509,24 +1623,28 @@ Pastikan opsi bersih tanpa huruf A./B./C., kunciJawaban akurat, dan sertakan pem
         const prevContent = turn1.candidates?.[0]?.content;
         if (prevContent) {
           try {
-            const { response: turn2 } = await callGeminiWithResilience(ai, {
-              contents: [
-                ...conversationParts,
-                prevContent,
-                {
-                  role: 'user',
-                  parts: toolExecutionSummary.map((item) => ({
-                    functionResponse: {
-                      ...(item.id ? { id: item.id } : {}),
-                      name: item.name,
-                      response: { result: item.result },
-                    },
-                  })),
-                },
-              ],
-              systemInstruction,
-              tools: [{ functionDeclarations: PET_FUNCTION_DECLARATIONS }],
-            });
+            const { response: turn2 } = await callGeminiWithResilience(
+              ai,
+              {
+                contents: [
+                  ...conversationParts,
+                  prevContent,
+                  {
+                    role: 'user',
+                    parts: toolExecutionSummary.map((item) => ({
+                      functionResponse: {
+                        ...(item.id ? { id: item.id } : {}),
+                        name: item.name,
+                        response: { result: item.result },
+                      },
+                    })),
+                  },
+                ],
+                systemInstruction,
+                tools: [{ functionDeclarations: PET_FUNCTION_DECLARATIONS }],
+              },
+              'interactive'
+            );
             replyText = (turn2.text || '').trim();
           } catch {
             replyText = toolExecutionSummary.map((s) => s.result).join(' ');

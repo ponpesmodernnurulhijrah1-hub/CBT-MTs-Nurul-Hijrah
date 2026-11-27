@@ -138,3 +138,45 @@ test('buildPetSystemInstruction embeds pet persona and enforces exam integrity w
   assert.match(examPrompt, /Miko/);
   assert.match(examPrompt, /ATURAN UJIAN AKTIF/);
 });
+
+test('proctor_warning forces concerned mood, respects audio mute/cooldown, and formats clear bubble text', async () => {
+  const mod = await import('./virtualPetUtils.ts');
+
+  const now = 500_000;
+  assert.equal(
+    mod.computePetMood({
+      lastInteractionMs: now - 500,
+      nowMs: now,
+      isExamLocked: true,
+      lastEvent: 'proctor_warning',
+      lastEventAtMs: now - 3_000,
+    }),
+    'concerned'
+  );
+
+  // First alert unmuted always plays
+  assert.deepEqual(
+    mod.shouldPlayProctorAlertAudio({ lastPlayedMs: 0, nowMs: 10_000, muted: false, kind: 'teacher' }),
+    { shouldPlay: true, cooldownMs: 1200 }
+  );
+
+  // Within cooldown blocks duplicate spam
+  assert.equal(
+    mod.shouldPlayProctorAlertAudio({ lastPlayedMs: 9_500, nowMs: 10_000, muted: false, kind: 'teacher' })
+      .shouldPlay,
+    false
+  );
+
+  // Muted suppresses playback
+  assert.equal(
+    mod.shouldPlayProctorAlertAudio({ lastPlayedMs: 0, nowMs: 10_000, muted: true, kind: 'teacher' })
+      .shouldPlay,
+    false
+  );
+
+  assert.match(
+    mod.formatProctorPetAlertBubble('teacher', 'Harap menghadap kamera'),
+    /Peringatan Pengawas: "Harap menghadap kamera"/
+  );
+  assert.match(mod.formatProctorPetAlertBubble('face'), /Pastikan wajahmu terlihat jelas/);
+});

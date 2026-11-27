@@ -229,6 +229,16 @@ export const BankSoalPanel: React.FC<BankSoalPanelProps> = ({
   const [savingQuestion, setSavingQuestion] = useState(false);
 
   const richRef = useRef<HTMLDivElement | null>(null);
+  const editorSyncTimerRef = useRef<number | null>(null);
+  const deletingIdsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    return () => {
+      if (editorSyncTimerRef.current !== null) {
+        window.clearTimeout(editorSyncTimerRef.current);
+      }
+    };
+  }, []);
 
   const openCreateModal = useCallback(() => {
     setEditingId(null);
@@ -239,7 +249,9 @@ export const BankSoalPanel: React.FC<BankSoalPanelProps> = ({
     setBobot(10);
     setEditorError(null);
     setShowEditor(true);
-    window.setTimeout(() => {
+    if (editorSyncTimerRef.current !== null) window.clearTimeout(editorSyncTimerRef.current);
+    editorSyncTimerRef.current = window.setTimeout(() => {
+      editorSyncTimerRef.current = null;
       if (richRef.current) richRef.current.innerHTML = '';
     }, 20);
   }, []);
@@ -259,7 +271,9 @@ export const BankSoalPanel: React.FC<BankSoalPanelProps> = ({
     setBobot(q.bobot || 10);
     setEditorError(null);
     setShowEditor(true);
-    window.setTimeout(() => {
+    if (editorSyncTimerRef.current !== null) window.clearTimeout(editorSyncTimerRef.current);
+    editorSyncTimerRef.current = window.setTimeout(() => {
+      editorSyncTimerRef.current = null;
       if (richRef.current) richRef.current.innerHTML = q.pertanyaanHtml;
     }, 20);
   }, []);
@@ -275,11 +289,13 @@ export const BankSoalPanel: React.FC<BankSoalPanelProps> = ({
 
   const handleDeleteSingle = useCallback(
     async (id: string) => {
-      if (deletingIds.has(id)) return;
+      if (deletingIdsRef.current.has(id)) return;
+      deletingIdsRef.current.add(id);
       setDeletingIds((prev) => new Set(prev).add(id));
       try {
         await onDeleteQuestion(id);
       } finally {
+        deletingIdsRef.current.delete(id);
         setDeletingIds((prev) => {
           const next = new Set(prev);
           next.delete(id);
@@ -287,7 +303,7 @@ export const BankSoalPanel: React.FC<BankSoalPanelProps> = ({
         });
       }
     },
-    [deletingIds, onDeleteQuestion]
+    [onDeleteQuestion]
   );
 
   const handleDeleteSelected = async () => {

@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   CalendarPlus,
   Copy,
@@ -263,10 +263,21 @@ export const JadwalTesPanel: React.FC<JadwalTesPanelProps> = ({
     }
   };
 
+  const copyTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
+    };
+  }, []);
+
   const copyToken = (id: string, tok: string) => {
     navigator.clipboard?.writeText(tok).catch(() => {});
     setCopiedId(id);
-    window.setTimeout(() => setCopiedId(null), 2000);
+    if (copyTimerRef.current !== null) window.clearTimeout(copyTimerRef.current);
+    copyTimerRef.current = window.setTimeout(() => {
+      copyTimerRef.current = null;
+      setCopiedId(null);
+    }, 2000);
   };
 
   return (

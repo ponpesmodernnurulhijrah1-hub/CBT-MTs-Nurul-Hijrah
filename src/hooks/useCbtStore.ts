@@ -66,6 +66,7 @@ import {
   isNewerAppVersion,
   resolveMonotonicPulseVersion,
 } from '../utils/updaterLogic';
+import { pruneExpiredMapEntries } from '../utils/concurrencyUtils';
 
 const LS_KEY = 'cbt_mts_nurul_hijrah_db_v2';
 const SEEDED_LS_KEY = 'cbt_mts_nurul_hijrah_seeded_v2';
@@ -579,18 +580,22 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
         errorMessage: params.errorMessage,
       });
 
+      let nextMergedLogs: SyncLogEntry[] | null = null;
       setSyncLogs((prev) => {
         const merged = mergeAndSortSyncLogs([entry], prev, MAX_SYNC_LOGS);
-        saveLocalSyncLogs(merged);
+        nextMergedLogs = merged;
+        return merged;
+      });
+      queueMicrotask(() => {
+        if (!nextMergedLogs) return;
         try {
           bcRef.current?.postMessage({
             type: 'SYNC_LOGS',
-            payload: merged,
+            payload: nextMergedLogs,
           });
         } catch {
           // Ignore broadcast errors
         }
-        return merged;
       });
 
       if (typeof navigator === 'undefined' || navigator.onLine) {
@@ -599,7 +604,9 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
           removeUndefinedFields(entry as unknown as Record<string, unknown>)
         ).catch(() => {});
 
-        if (params.publishPulse && params.status === 'Berhasil') {
+        // Only structural guru/admin/system updates publish to the global cbt_sync_pulse doc
+        // so >100 concurrent student exam submissions do not contend on a single Firestore doc.
+        if (params.publishPulse && params.status === 'Berhasil' && actor.role !== 'siswa') {
           const monotonicVersion = resolveMonotonicPulseVersion(
             APP_VERSION,
             remotePulseVersionRef.current
@@ -627,6 +634,7 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
 
   const markPendingDeletes = useCallback((colName: string, ids: string[]) => {
     const now = Date.now();
+    pruneExpiredMapEntries(pendingDeletedIdsRef.current, now, 15_000);
     hadCloudDocsRef.current[colName] = true;
     for (const id of ids) {
       pendingDeletedIdsRef.current.set(`${colName}:${id}`, now);
@@ -643,23 +651,54 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
     }, 350);
   }, []);
 
+  const hasMountedPersistRef = useRef(false);
+  useEffect(() => {
+    if (!hasMountedPersistRef.current) {
+      hasMountedPersistRef.current = true;
+      return;
+    }
+    scheduleSaveLocalState(stateRef.current);
+  }, [
+    state.subjects,
+    state.classes,
+    state.teachers,
+    state.admins,
+    state.questions,
+    state.exams,
+    state.results,
+    scheduleSaveLocalState,
+  ]);
+
+  const hasMountedLogsPersistRef = useRef(false);
+  useEffect(() => {
+    if (!hasMountedLogsPersistRef.current) {
+      hasMountedLogsPersistRef.current = true;
+      return;
+    }
+    saveLocalSyncLogs(syncLogs);
+  }, [syncLogs]);
+
   const updateAndBroadcast = useCallback(
     (updater: (prev: CbtDatabaseState) => CbtDatabaseState) => {
+      let nextSnapshot: CbtDatabaseState | null = null;
       setState((prev) => {
         const next = updater(prev);
-        scheduleSaveLocalState(next);
+        nextSnapshot = next;
+        return next;
+      });
+      queueMicrotask(() => {
+        if (!nextSnapshot) return;
         try {
           bcRef.current?.postMessage({
             type: 'SYNC_STATE',
-            payload: { ...next, liveStreams: [] },
+            payload: { ...nextSnapshot, liveStreams: [] },
           });
         } catch {
           // Ignore broadcast errors
         }
-        return next;
       });
     },
-    [scheduleSaveLocalState]
+    []
   );
 
   const enqueueAndSaveMutation = useCallback((mutation: PendingSyncMutation) => {
@@ -987,6 +1026,7 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
         }
       }
 
+      let syncedStateSnapshot: CbtDatabaseState | null = null;
       setState((prev) => {
         const next: CbtDatabaseState = {
           ...prev,
@@ -998,13 +1038,19 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
           questions: nextQuestions ?? prev.questions,
           results: nextResults ?? prev.results,
         };
-        saveLocalState(next);
+        syncedStateSnapshot = next;
+        return next;
+      });
+      queueMicrotask(() => {
+        if (!syncedStateSnapshot) return;
         try {
-          bcRef.current?.postMessage({ type: 'SYNC_STATE', payload: next });
+          bcRef.current?.postMessage({
+            type: 'SYNC_STATE',
+            payload: { ...syncedStateSnapshot, liveStreams: [] },
+          });
         } catch {
           // Ignore broadcast errors
         }
-        return next;
       });
 
       await waitForCloudAck(4000);
@@ -1233,6 +1279,7 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
           (a) => !LEGACY_ADMIN_IDS.includes(a.id) && a.id !== PRIMARY_ADMIN_ID
         );
 
+        let initStateSnapshot: CbtDatabaseState | null = null;
         setState((prev) => {
           const next: CbtDatabaseState = {
             ...prev,
@@ -1242,13 +1289,19 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
             admins: [primaryAdmin, ...cleanAdmins],
             exams: nextExams ?? prev.exams,
           };
-          saveLocalState(next);
+          initStateSnapshot = next;
+          return next;
+        });
+        queueMicrotask(() => {
+          if (!initStateSnapshot) return;
           try {
-            bcRef.current?.postMessage({ type: 'SYNC_STATE', payload: next });
+            bcRef.current?.postMessage({
+              type: 'SYNC_STATE',
+              payload: { ...initStateSnapshot, liveStreams: [] },
+            });
           } catch {
             // Ignore broadcast errors
           }
-          return next;
         });
 
         clearAutoRetryTimer();
@@ -1310,20 +1363,16 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
         const seeded = await buildInitialState();
         if (!active) return;
         markDatabaseSeeded();
-        setState((prev) => {
-          const merged: CbtDatabaseState = {
-            subjects: prev.subjects.length ? prev.subjects : seeded.subjects,
-            classes: prev.classes.length ? prev.classes : seeded.classes,
-            teachers: prev.teachers.length ? prev.teachers : seeded.teachers,
-            admins: [primaryAdmin],
-            questions: prev.questions.length ? prev.questions : seeded.questions,
-            exams: prev.exams.length ? prev.exams : seeded.exams,
-            results: prev.results,
-            liveStreams: prev.liveStreams,
-          };
-          saveLocalState(merged);
-          return merged;
-        });
+        setState((prev) => ({
+          subjects: prev.subjects.length ? prev.subjects : seeded.subjects,
+          classes: prev.classes.length ? prev.classes : seeded.classes,
+          teachers: prev.teachers.length ? prev.teachers : seeded.teachers,
+          admins: [primaryAdmin],
+          questions: prev.questions.length ? prev.questions : seeded.questions,
+          exams: prev.exams.length ? prev.exams : seeded.exams,
+          results: prev.results,
+          liveStreams: prev.liveStreams,
+        }));
       } else {
         markDatabaseSeeded();
         setState((prev) => {
@@ -1331,9 +1380,7 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
             (a) => !LEGACY_ADMIN_IDS.includes(a.id) && a.id !== PRIMARY_ADMIN_ID
           );
           const nextAdmins = [primaryAdmin, ...filtered];
-          const next = { ...prev, admins: nextAdmins };
-          saveLocalState(next);
-          return next;
+          return { ...prev, admins: nextAdmins };
         });
       }
       if (active) setIsReady(true);
@@ -1355,7 +1402,6 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
             ...incoming,
             liveStreams: prev.liveStreams,
           }));
-          saveLocalState(incoming);
         } else if (ev.data?.type === 'SYNC_META' && ev.data?.payload) {
           const meta = ev.data.payload as {
             lastSyncedAt: string | null;
@@ -1367,11 +1413,7 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
           setSyncError(meta.syncError);
         } else if (ev.data?.type === 'SYNC_LOGS' && Array.isArray(ev.data?.payload)) {
           const incomingLogs = ev.data.payload as SyncLogEntry[];
-          setSyncLogs((prev) => {
-            const merged = mergeAndSortSyncLogs(incomingLogs, prev, MAX_SYNC_LOGS);
-            saveLocalSyncLogs(merged);
-            return merged;
-          });
+          setSyncLogs((prev) => mergeAndSortSyncLogs(incomingLogs, prev, MAX_SYNC_LOGS));
         }
       };
     }
@@ -1509,11 +1551,7 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
                 (a) => !LEGACY_ADMIN_IDS.includes(a.id) && a.id !== PRIMARY_ADMIN_ID
               );
               const mergedAdmins = [primaryAdmin, ...cleanAdmins];
-              setState((prev) => {
-                const next = { ...prev, admins: mergedAdmins };
-                scheduleSaveLocalState(next);
-                return next;
-              });
+              setState((prev) => ({ ...prev, admins: mergedAdmins }));
               return;
             }
 
@@ -1584,11 +1622,7 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
               return d;
             }) as unknown as CbtDatabaseState[K];
 
-            setState((prev) => {
-              const next = { ...prev, [key]: normalizedDocs };
-              scheduleSaveLocalState(next);
-              return next;
-            });
+            setState((prev) => ({ ...prev, [key]: normalizedDocs }));
           },
           (err) => {
             if (!active) return;
@@ -1791,13 +1825,7 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
               return d;
             }) as unknown as CbtDatabaseState[K];
 
-            setState((prev) => {
-              const next = { ...prev, [key]: normalizedDocs };
-              if (colName !== 'live_streams') {
-                scheduleSaveLocalState(next);
-              }
-              return next;
-            });
+            setState((prev) => ({ ...prev, [key]: normalizedDocs }));
           },
           () => {
             if (active && !navigator.onLine) setCloudConnected(false);
@@ -1828,11 +1856,7 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
               ...(d.data() as Record<string, unknown>),
               id: d.id,
             })) as unknown as SyncLogEntry[];
-            setSyncLogs((prev) => {
-              const merged = mergeAndSortSyncLogs(prev, cloudLogs, MAX_SYNC_LOGS);
-              saveLocalSyncLogs(merged);
-              return merged;
-            });
+            setSyncLogs((prev) => mergeAndSortSyncLogs(prev, cloudLogs, MAX_SYNC_LOGS));
           },
           () => {}
         );
@@ -1846,7 +1870,7 @@ export function useCbtStore(activeRole: UserRole = 'siswa', actorName?: string) 
       active = false;
       unsubs.forEach((u) => u());
     };
-  }, [activeRole, refreshPendingSnapshotFlag, scheduleSaveLocalState]);
+  }, [activeRole, refreshPendingSnapshotFlag]);
 
   // --- SUBJECTS CRUD ---
   const addSubject = useCallback(

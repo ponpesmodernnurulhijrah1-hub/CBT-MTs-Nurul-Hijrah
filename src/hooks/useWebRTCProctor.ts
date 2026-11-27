@@ -78,7 +78,11 @@ export function useStudentWebRTCPublisher(params: {
         if (closed || !snap.exists()) return;
         const data = snap.data() as Partial<LiveStreamSession>;
 
-        if (data.answerSdp && !pc.currentRemoteDescription) {
+        if (
+          data.answerSdp &&
+          !pc.currentRemoteDescription &&
+          pc.signalingState === 'have-local-offer'
+        ) {
           try {
             const answer = JSON.parse(data.answerSdp) as RTCSessionDescriptionInit;
             await pc.setRemoteDescription(new RTCSessionDescription(answer));
@@ -118,6 +122,7 @@ export function useStudentWebRTCPublisher(params: {
     return () => {
       closed = true;
       unsub();
+      pc.onicecandidate = null;
       pc.close();
       pcRef.current = null;
     };
@@ -127,14 +132,18 @@ export function useStudentWebRTCPublisher(params: {
 /**
  * Viewer WebRTC di Dashboard Guru & Admin:
  * Menerima Offer dari siswa, mengirim Answer, dan memutar <video> & <audio> live.
+ * Parameter `enabled` membatasi jumlah PeerConnection serentak agar browser pengawas tetap ringan saat >100 siswa aktif.
  */
-export function useProctorWebRTCViewer(session: LiveStreamSession) {
+export function useProctorWebRTCViewer(session: LiveStreamSession, enabled: boolean = true) {
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const addedStudentCandidatesRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
-    if (!session.offerSdp) return;
+    if (!enabled || !session.offerSdp) {
+      setRemoteStream(null);
+      return;
+    }
     let closed = false;
     const pc = new RTCPeerConnection(RTC_CONFIG);
     pcRef.current = pc;
@@ -146,6 +155,13 @@ export function useProctorWebRTCViewer(session: LiveStreamSession) {
       if (!event.streams[0]) inboundStream.addTrack(event.track);
       if (!closed) {
         setRemoteStream(inboundStream);
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (closed) return;
+      if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+        setRemoteStream(null);
       }
     };
 
@@ -163,6 +179,7 @@ export function useProctorWebRTCViewer(session: LiveStreamSession) {
       try {
         const offer = JSON.parse(session.offerSdp!) as RTCSessionDescriptionInit;
         await pc.setRemoteDescription(new RTCSessionDescription(offer));
+        if (closed) return;
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         if (!closed) {
@@ -173,7 +190,7 @@ export function useProctorWebRTCViewer(session: LiveStreamSession) {
           ).catch(() => {});
         }
 
-        if (Array.isArray(session.studentIceCandidates)) {
+        if (!closed && Array.isArray(session.studentIceCandidates)) {
           for (const rawCand of session.studentIceCandidates) {
             if (addedStudentCandidatesRef.current.has(rawCand)) continue;
             addedStudentCandidatesRef.current.add(rawCand);
@@ -195,15 +212,19 @@ export function useProctorWebRTCViewer(session: LiveStreamSession) {
 
     return () => {
       closed = true;
+      pc.onicecandidate = null;
+      pc.ontrack = null;
+      pc.onconnectionstatechange = null;
       pc.close();
       pcRef.current = null;
       addedStudentCandidatesRef.current.clear();
       setRemoteStream(null);
     };
-  }, [session.sessionId, session.offerSdp]);
+  }, [enabled, session.sessionId, session.offerSdp]);
 
   // Apply late-arriving student ICE candidates appended to Firestore after initial Answer
   useEffect(() => {
+    if (!enabled) return;
     const pc = pcRef.current;
     if (!pc || !pc.remoteDescription || !Array.isArray(session.studentIceCandidates)) return;
     for (const rawCand of session.studentIceCandidates) {
@@ -217,7 +238,7 @@ export function useProctorWebRTCViewer(session: LiveStreamSession) {
         // Ignore
       }
     }
-  }, [session.sessionId, session.studentIceCandidates]);
+  }, [enabled, session.sessionId, session.studentIceCandidates]);
 
   return { remoteStream };
 }

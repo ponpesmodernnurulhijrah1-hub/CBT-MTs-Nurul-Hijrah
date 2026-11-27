@@ -8,9 +8,15 @@ import {
   Video,
   Radio,
   AlertTriangle,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import type { LiveStreamSession } from '../types/cbt';
 import { useProctorWebRTCViewer } from '../hooks/useWebRTCProctor';
+import { runWithConcurrencyLimit } from '../utils/concurrencyUtils';
+
+const TILES_PER_PAGE = 12;
+const MAX_CONCURRENT_WEBRTC_TILES = 6;
 
 interface LiveMonitoringGridProps {
   sessions: LiveStreamSession[];
@@ -20,6 +26,7 @@ interface LiveMonitoringGridProps {
 
 interface StudentVideoTileProps {
   session: LiveStreamSession;
+  webrtcEnabled: boolean;
   isUnmuted: boolean;
   onToggleMute: () => void;
   onSpotlight: () => void;
@@ -28,12 +35,13 @@ interface StudentVideoTileProps {
 
 const StudentVideoTile: React.FC<StudentVideoTileProps> = ({
   session,
+  webrtcEnabled,
   isUnmuted,
   onToggleMute,
   onSpotlight,
   onSendWarning,
 }) => {
-  const { remoteStream } = useProctorWebRTCViewer(session);
+  const { remoteStream } = useProctorWebRTCViewer(session, webrtcEnabled);
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
   useEffect(() => {
@@ -78,7 +86,7 @@ const StudentVideoTile: React.FC<StudentVideoTileProps> = ({
         <div className="absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/80 to-transparent px-3 py-2 text-xs text-white">
           <span className="inline-flex items-center gap-1.5 font-semibold tracking-wide text-emerald-300">
             <Radio className="h-3.5 w-3.5" />
-            <span>LIVE</span>
+            <span>{remoteStream ? 'LIVE' : session.snapshotPreview ? 'SNAPSHOT' : 'SIAGA'}</span>
           </span>
           <span className="font-mono-tabular text-[11px] text-slate-200">
             {session.kelas}
@@ -199,38 +207,111 @@ export const LiveMonitoringGrid: React.FC<LiveMonitoringGridProps> = ({
   const [unmutedSessionId, setUnmutedSessionId] = useState<string | null>(null);
   const [spotlightSessionId, setSpotlightSessionId] = useState<string | null>(null);
   const [viewFilter, setViewFilter] = useState<'ALL' | 'FLAGGED'>('ALL');
+  const [currentPage, setCurrentPage] = useState(1);
   const [customWarning, setCustomWarning] = useState(
     'Peringatan Pengawas: Dilarang keluar dari aplikasi atau membuka aplikasi lain!'
   );
   const [sentNotice, setSentNotice] = useState<string | null>(null);
+  const [isBroadcasting, setIsBroadcasting] = useState(false);
+  const noticeTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (noticeTimerRef.current !== null) {
+        window.clearTimeout(noticeTimerRef.current);
+      }
+    };
+  }, []);
+
+  const showTransientNotice = (msg: string, durationMs = 3000) => {
+    setSentNotice(msg);
+    if (noticeTimerRef.current !== null) {
+      window.clearTimeout(noticeTimerRef.current);
+    }
+    noticeTimerRef.current = window.setTimeout(() => {
+      noticeTimerRef.current = null;
+      setSentNotice(null);
+    }, durationMs);
+  };
 
   const activeSessions = useMemo(() => sessions.filter((s) => s.status === 'aktif'), [sessions]);
   const flaggedCount = useMemo(
     () => activeSessions.filter((s) => s.pelanggaranTab > 0).length,
     [activeSessions]
   );
-  const visibleSessions = useMemo(
-    () =>
+  const visibleSessions = useMemo(() => {
+    const filtered =
       viewFilter === 'FLAGGED'
         ? activeSessions.filter((s) => s.pelanggaranTab > 0)
-        : activeSessions,
-    [activeSessions, viewFilter]
-  );
+        : activeSessions;
+    return [...filtered].sort((a, b) => {
+      if (b.pelanggaranTab !== a.pelanggaranTab) return b.pelanggaranTab - a.pelanggaranTab;
+      return (b.peringatanWajah || 0) - (a.peringatanWajah || 0);
+    });
+  }, [activeSessions, viewFilter]);
+
+  const totalPages = Math.max(1, Math.ceil(visibleSessions.length / TILES_PER_PAGE));
+  const safePage = Math.min(currentPage, totalPages);
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
+
+  const pagedSessions = useMemo(() => {
+    const start = (safePage - 1) * TILES_PER_PAGE;
+    return visibleSessions.slice(start, start + TILES_PER_PAGE);
+  }, [safePage, visibleSessions]);
+
+  const webrtcEnabledIds = useMemo(() => {
+    const enabled = new Set<string>();
+    if (unmutedSessionId && unmutedSessionId !== spotlightSessionId) {
+      enabled.add(unmutedSessionId);
+    }
+    for (const s of pagedSessions) {
+      if (enabled.size >= MAX_CONCURRENT_WEBRTC_TILES) break;
+      if (s.sessionId === spotlightSessionId) continue;
+      if (s.pelanggaranTab > 0) enabled.add(s.sessionId);
+    }
+    for (const s of pagedSessions) {
+      if (enabled.size >= MAX_CONCURRENT_WEBRTC_TILES) break;
+      if (s.sessionId === spotlightSessionId) continue;
+      enabled.add(s.sessionId);
+    }
+    return enabled;
+  }, [pagedSessions, spotlightSessionId, unmutedSessionId]);
 
   const spotlightSession = activeSessions.find((s) => s.sessionId === spotlightSessionId) || null;
 
   const handleWarning = async (sessionId: string, msg: string) => {
-    await onSendWarning(sessionId, msg);
-    setSentNotice('Peringatan suara & teks berhasil dikirim ke layar siswa.');
-    window.setTimeout(() => setSentNotice(null), 3000);
+    try {
+      await onSendWarning(sessionId, msg);
+      showTransientNotice('Peringatan suara & teks berhasil dikirim ke layar siswa.', 3000);
+    } catch {
+      showTransientNotice('Gagal mengirim peringatan ke peserta. Coba lagi sebentar.', 3500);
+    }
   };
 
   const handleBroadcastAll = async () => {
     const cleanMsg = customWarning.trim();
-    if (!cleanMsg || activeSessions.length === 0) return;
-    await Promise.all(activeSessions.map((s) => onSendWarning(s.sessionId, cleanMsg)));
-    setSentNotice(`Peringatan massal berhasil dikirim ke seluruh ${activeSessions.length} peserta aktif.`);
-    window.setTimeout(() => setSentNotice(null), 3500);
+    if (!cleanMsg || activeSessions.length === 0 || isBroadcasting) return;
+    setIsBroadcasting(true);
+    try {
+      await runWithConcurrencyLimit(activeSessions, 12, (s) =>
+        onSendWarning(s.sessionId, cleanMsg)
+      );
+      showTransientNotice(
+        `Peringatan massal berhasil dikirim ke seluruh ${activeSessions.length} peserta aktif.`,
+        3500
+      );
+    } catch {
+      showTransientNotice(
+        'Sebagian peringatan massal gagal terkirim karena koneksi sibuk. Coba ulangi.',
+        4000
+      );
+    } finally {
+      setIsBroadcasting(false);
+    }
   };
 
   if (activeSessions.length === 0) {
@@ -252,7 +333,10 @@ export const LiveMonitoringGrid: React.FC<LiveMonitoringGridProps> = ({
           <div className="glass-subtle inline-flex max-w-full overflow-x-auto items-center gap-1 rounded-xl p-1">
             <button
               type="button"
-              onClick={() => setViewFilter('ALL')}
+              onClick={() => {
+                setViewFilter('ALL');
+                setCurrentPage(1);
+              }}
               className={`btn-press rounded-lg px-2.5 py-1 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
                 viewFilter === 'ALL'
                   ? 'bg-white/85 text-slate-900 shadow-sm'
@@ -263,7 +347,10 @@ export const LiveMonitoringGrid: React.FC<LiveMonitoringGridProps> = ({
             </button>
             <button
               type="button"
-              onClick={() => setViewFilter('FLAGGED')}
+              onClick={() => {
+                setViewFilter('FLAGGED');
+                setCurrentPage(1);
+              }}
               className={`btn-press rounded-lg px-2.5 py-1 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
                 viewFilter === 'FLAGGED'
                   ? 'bg-red-600 text-white shadow-sm'
@@ -274,7 +361,7 @@ export const LiveMonitoringGrid: React.FC<LiveMonitoringGridProps> = ({
             </button>
           </div>
           <span>
-            Audio otomatis di-<strong>Mute</strong> agar suara tidak bertabrakan; klik <strong>Unmute</strong> pada satu peserta.
+            Audio otomatis di-<strong>Mute</strong> agar tidak bertabrakan; maksimal {MAX_CONCURRENT_WEBRTC_TILES} video WebRTC aktif sekaligus (lainnya otomatis tampil via snapshot hemat bandwidth).
           </span>
         </div>
 
@@ -294,11 +381,16 @@ export const LiveMonitoringGrid: React.FC<LiveMonitoringGridProps> = ({
         />
         <button
           type="button"
+          disabled={isBroadcasting}
           onClick={handleBroadcastAll}
-          className="btn-press inline-flex items-center justify-center gap-1.5 rounded-xl border border-red-300/70 bg-red-600 px-3.5 py-2 text-xs font-semibold text-white hover:bg-red-700 whitespace-nowrap shrink-0"
+          className="btn-press inline-flex items-center justify-center gap-1.5 rounded-xl border border-red-300/70 bg-red-600 px-3.5 py-2 text-xs font-semibold text-white hover:bg-red-700 disabled:opacity-60 whitespace-nowrap shrink-0"
         >
           <BellRing className="h-3.5 w-3.5" />
-          <span>Tegur Semua ({activeSessions.length})</span>
+          <span>
+            {isBroadcasting
+              ? 'Mengirim Teguran...'
+              : `Tegur Semua (${activeSessions.length})`}
+          </span>
         </button>
       </div>
 
@@ -313,25 +405,61 @@ export const LiveMonitoringGrid: React.FC<LiveMonitoringGridProps> = ({
           Tidak ada peserta yang terdeteksi keluar aplikasi saat ini.
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-          {visibleSessions.map((session) => (
-            <StudentVideoTile
-              key={session.sessionId}
-              session={session}
-              isUnmuted={unmutedSessionId === session.sessionId}
-              onToggleMute={() =>
-                setUnmutedSessionId((prev) =>
-                  prev === session.sessionId ? null : session.sessionId
-                )
-              }
-              onSpotlight={() => {
-                setSpotlightSessionId(session.sessionId);
-                setUnmutedSessionId(session.sessionId);
-              }}
-              onSendWarning={(msg) => handleWarning(session.sessionId, msg)}
-            />
-          ))}
-        </div>
+        <>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            {pagedSessions.map((session) => (
+              <StudentVideoTile
+                key={session.sessionId}
+                session={session}
+                webrtcEnabled={webrtcEnabledIds.has(session.sessionId)}
+                isUnmuted={unmutedSessionId === session.sessionId}
+                onToggleMute={() =>
+                  setUnmutedSessionId((prev) =>
+                    prev === session.sessionId ? null : session.sessionId
+                  )
+                }
+                onSpotlight={() => {
+                  setSpotlightSessionId(session.sessionId);
+                  setUnmutedSessionId(session.sessionId);
+                }}
+                onSendWarning={(msg) => handleWarning(session.sessionId, msg)}
+              />
+            ))}
+          </div>
+
+          {totalPages > 1 && (
+            <div className="surface-card flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 text-xs text-slate-600">
+              <span>
+                Menampilkan {(safePage - 1) * TILES_PER_PAGE + 1}–
+                {Math.min(safePage * TILES_PER_PAGE, visibleSessions.length)} dari{' '}
+                {visibleSessions.length} peserta
+              </span>
+              <div className="inline-flex items-center gap-1.5">
+                <button
+                  type="button"
+                  disabled={safePage <= 1}
+                  onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                  className="btn-press inline-flex items-center gap-1 rounded-lg border border-white/70 bg-white/60 px-2.5 py-1 font-semibold text-slate-700 hover:bg-white/90 disabled:opacity-45"
+                >
+                  <ChevronLeft className="h-3.5 w-3.5" />
+                  <span>Sebelumnya</span>
+                </button>
+                <span className="font-mono-tabular px-2 font-semibold text-slate-800">
+                  Hal {safePage} / {totalPages}
+                </span>
+                <button
+                  type="button"
+                  disabled={safePage >= totalPages}
+                  onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                  className="btn-press inline-flex items-center gap-1 rounded-lg border border-white/70 bg-white/60 px-2.5 py-1 font-semibold text-slate-700 hover:bg-white/90 disabled:opacity-45"
+                >
+                  <span>Berikutnya</span>
+                  <ChevronRight className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
+          )}
+        </>
       )}
 
       {/* Spotlight Fullscreen Modal */}

@@ -197,6 +197,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [password, setPassword] = useState('');
   const [showAdminPassword, setShowAdminPassword] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [internalTab, setInternalTab] = useState<AdminTab>('ringkasan');
   const activeTab = controlledTab ?? internalTab;
   const setActiveTab = (next: AdminTab) => {
@@ -285,19 +286,31 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isLoggingIn) return;
     setLoginError(null);
     if (!username.trim() || !password) {
       setLoginError('Masukkan username dan password administrator.');
       return;
     }
-    const admin = await onAuthenticate(username, password);
-    if (!admin) {
-      setLoginError('Kredensial administrator tidak valid.');
-      return;
+    setIsLoggingIn(true);
+    try {
+      const admin = await onAuthenticate(username, password);
+      if (!admin) {
+        setLoginError('Kredensial administrator tidak valid.');
+        return;
+      }
+      onSetLoggedAdmin(admin);
+      setUsername('');
+      setPassword('');
+    } catch (err) {
+      setLoginError(
+        err instanceof Error && err.message
+          ? err.message
+          : 'Gagal memverifikasi akun administrator. Coba lagi sebentar.'
+      );
+    } finally {
+      setIsLoggingIn(false);
     }
-    onSetLoggedAdmin(admin);
-    setUsername('');
-    setPassword('');
   };
 
   // STRICT PRIVACY: Clean 2-Column Command Login with ZERO demo credentials / quick-login buttons
@@ -395,9 +408,10 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
             <button
               type="submit"
-              className="btn-press w-full rounded-xl bg-slate-900/95 px-4 py-3 text-sm font-bold text-white hover:bg-slate-800 shadow-[0_10px_24px_-10px_rgba(15,23,42,0.5)]"
+              disabled={isLoggingIn}
+              className="btn-press w-full rounded-xl bg-slate-900/95 px-4 py-3 text-sm font-bold text-white hover:bg-slate-800 disabled:opacity-60 shadow-[0_10px_24px_-10px_rgba(15,23,42,0.5)]"
             >
-              Masuk Panel Super Admin
+              {isLoggingIn ? 'Memverifikasi...' : 'Masuk Panel Super Admin'}
             </button>
           </form>
         </div>

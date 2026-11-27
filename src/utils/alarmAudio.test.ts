@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createLoudAlarmWavBytes } from './alarmAudio';
+import { createLoudAlarmWavBytes, getProctorChimePattern } from './alarmAudio';
 
 test('createLoudAlarmWavBytes generates a valid full-scale 0 dBFS 16-bit PCM WAV header & samples', () => {
   const sampleRate = 22050;
@@ -30,4 +30,16 @@ test('createLoudAlarmWavBytes generates a valid full-scale 0 dBFS 16-bit PCM WAV
     if (sample > maxAbs) maxAbs = sample;
   }
   assert.ok(maxAbs >= 30000, `Expected near full-scale peak >= 30000, got ${maxAbs}`);
+});
+
+test('getProctorChimePattern returns distinct multi-note sequences for teacher, violation, and face alerts', () => {
+  const teacher = getProctorChimePattern('teacher');
+  const violation = getProctorChimePattern('violation');
+  const face = getProctorChimePattern('face');
+
+  assert.equal(teacher.length, 4);
+  assert.equal(violation.length, 3);
+  assert.equal(face.length, 2);
+  assert.ok(teacher.every((s) => s.freq > 0 && s.durationSec > 0 && s.gain > 0));
+  assert.ok(teacher[0].delaySec < teacher[1].delaySec);
 });

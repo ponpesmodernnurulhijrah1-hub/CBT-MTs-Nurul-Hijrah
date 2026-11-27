@@ -341,9 +341,96 @@ export function playWarningBeep(): void {
     gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.55);
     osc.connect(gain);
     gain.connect(ctx.destination);
+    osc.onended = () => {
+      try {
+        osc.disconnect();
+        gain.disconnect();
+      } catch {
+        // Ignore already disconnected nodes
+      }
+    };
     osc.start();
     osc.stop(ctx.currentTime + 0.55);
   } catch {
     // Ignore
+  }
+}
+
+export type ProctorChimeKind = 'teacher' | 'violation' | 'face';
+
+export interface ChimeToneStep {
+  freq: number;
+  delaySec: number;
+  durationSec: number;
+  gain: number;
+  type: OscillatorType;
+}
+
+export function getProctorChimePattern(kind: ProctorChimeKind): ChimeToneStep[] {
+  if (kind === 'teacher') {
+    return [
+      { freq: 880, delaySec: 0, durationSec: 0.14, gain: 0.42, type: 'triangle' },
+      { freq: 1318, delaySec: 0.12, durationSec: 0.18, gain: 0.48, type: 'triangle' },
+      { freq: 1046, delaySec: 0.34, durationSec: 0.14, gain: 0.45, type: 'triangle' },
+      { freq: 1568, delaySec: 0.46, durationSec: 0.24, gain: 0.5, type: 'triangle' },
+    ];
+  }
+  if (kind === 'violation') {
+    return [
+      { freq: 988, delaySec: 0, durationSec: 0.18, gain: 0.48, type: 'sawtooth' },
+      { freq: 740, delaySec: 0.19, durationSec: 0.22, gain: 0.44, type: 'triangle' },
+      { freq: 988, delaySec: 0.42, durationSec: 0.22, gain: 0.48, type: 'triangle' },
+    ];
+  }
+  return [
+    { freq: 784, delaySec: 0, durationSec: 0.14, gain: 0.36, type: 'sine' },
+    { freq: 1046, delaySec: 0.15, durationSec: 0.2, gain: 0.4, type: 'triangle' },
+  ];
+}
+
+/**
+ * Plays a distinct, clear proctoring notification chime for VirtualPetAssistant
+ * so students immediately notice incoming teacher warnings or camera/proctoring alerts.
+ */
+export function playProctorNotificationChime(kind: ProctorChimeKind = 'teacher'): boolean {
+  const ctx = getAudioContext();
+  if (!ctx) return false;
+  if (ctx.state === 'suspended') {
+    ctx.resume().catch(() => {});
+  }
+
+  try {
+    const baseTime = ctx.currentTime;
+    const steps = getProctorChimePattern(kind);
+    for (const step of steps) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const startAt = baseTime + step.delaySec;
+      const stopAt = startAt + step.durationSec;
+
+      osc.type = step.type;
+      osc.frequency.setValueAtTime(step.freq, startAt);
+
+      gain.gain.setValueAtTime(0.001, startAt);
+      gain.gain.linearRampToValueAtTime(step.gain, startAt + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.005, stopAt);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.onended = () => {
+        try {
+          osc.disconnect();
+          gain.disconnect();
+        } catch {
+          // Ignore
+        }
+      };
+
+      osc.start(startAt);
+      osc.stop(stopAt + 0.01);
+    }
+    return true;
+  } catch {
+    return false;
   }
 }

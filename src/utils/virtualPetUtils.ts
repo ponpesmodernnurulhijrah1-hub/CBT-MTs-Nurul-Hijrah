@@ -15,6 +15,7 @@ export type PetMood =
 export type PetActivityEvent =
   | 'exam_submitted_normal'
   | 'exam_submitted_violation'
+  | 'proctor_warning'
   | 'exam_started'
   | 'questions_saved'
   | 'sheets_exported'
@@ -22,6 +23,8 @@ export type PetActivityEvent =
   | 'schedule_toggled'
   | 'ai_command_success'
   | 'portal_switched';
+
+export type ProctorAlertKind = 'teacher' | 'violation' | 'face';
 
 export interface PetMoodMeta {
   id: PetMood;
@@ -312,7 +315,10 @@ export function computePetMood(input: ComputePetMoodInput): PetMood {
     if (PROUD_EVENTS.has(lastEvent) && eventAge < proudDurationMs) {
       return 'proud';
     }
-    if (lastEvent === 'exam_submitted_violation' && eventAge < concernedDurationMs) {
+    if (
+      (lastEvent === 'exam_submitted_violation' || lastEvent === 'proctor_warning') &&
+      eventAge < concernedDurationMs
+    ) {
       return 'concerned';
     }
   }
@@ -326,6 +332,47 @@ export function computePetMood(input: ComputePetMoodInput): PetMood {
   }
 
   return 'idle';
+}
+
+export function shouldPlayProctorAlertAudio(params: {
+  lastPlayedMs: number;
+  nowMs: number;
+  muted: boolean;
+  kind?: ProctorAlertKind;
+}): { shouldPlay: boolean; cooldownMs: number } {
+  const kind = params.kind || 'teacher';
+  const cooldownMs = kind === 'teacher' ? 1_200 : kind === 'violation' ? 2_500 : 5_000;
+  if (params.muted) {
+    return { shouldPlay: false, cooldownMs };
+  }
+  if (!Number.isFinite(params.lastPlayedMs) || params.lastPlayedMs <= 0) {
+    return { shouldPlay: true, cooldownMs };
+  }
+  const elapsed = Math.max(0, params.nowMs - params.lastPlayedMs);
+  return {
+    shouldPlay: elapsed >= cooldownMs,
+    cooldownMs,
+  };
+}
+
+export function formatProctorPetAlertBubble(
+  kind: ProctorAlertKind,
+  detail?: string
+): string {
+  const cleanDetail = (detail || '').trim();
+  if (kind === 'teacher') {
+    return cleanDetail
+      ? `Peringatan Pengawas: "${cleanDetail}"`
+      : 'Ada peringatan baru dari pengawas ujian! Segera periksa layarmu.';
+  }
+  if (kind === 'violation') {
+    return cleanDetail
+      ? `Pelanggaran Terdeteksi: ${cleanDetail}`
+      : 'Peringatan pengawasan! Jangan meninggalkan layar ujian.';
+  }
+  return cleanDetail
+    ? `Perhatian Kamera: ${cleanDetail}`
+    : 'Pastikan wajahmu terlihat jelas di kamera selama ujian berlangsung.';
 }
 
 export function isValidPetId(val: unknown): val is PetCharacterId {

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  BellRing,
   Eye,
   EyeOff,
   Heart,
@@ -8,29 +9,36 @@ import {
   Settings2,
   Sparkles,
   Star,
+  Volume2,
+  VolumeX,
   Wand2,
   X,
 } from 'lucide-react';
 import {
   clampPetPosition,
   computePetMood,
+  formatProctorPetAlertBubble,
   getDefaultPetPosition,
   isValidPetId,
   PET_CHARACTER_LIST,
   PET_CHARACTERS,
   PET_MOODS,
+  shouldPlayProctorAlertAudio,
   type PetActivityEvent,
   type PetAppContextSummary,
   type PetCharacterId,
   type PetClientAction,
   type PetMood,
+  type ProctorAlertKind,
 } from '../utils/virtualPetUtils';
 import { formatClientFetchError, safeParseResponseJson } from '../utils/aiQuestionUtils';
+import { playProctorNotificationChime } from '../utils/alarmAudio';
 import { PetCharacterSvg } from './PetCharacterSvg';
 
 const PET_STORAGE_KEY = 'cbt_virtual_pet_character_v1';
 const PET_OFFSET_KEY = 'cbt_virtual_pet_offset_v2';
 const PET_HIDDEN_KEY = 'cbt_virtual_pet_hidden_v1';
+const PET_SOUND_MUTED_KEY = 'cbt_pet_sound_muted_v1';
 const WIDGET_SIZE = 92;
 
 interface ParticleItem {
@@ -49,6 +57,7 @@ export interface PetActivitySignal {
   id: number;
   event: PetActivityEvent;
   detail?: string;
+  kind?: ProctorAlertKind;
 }
 
 interface VirtualPetAssistantProps {
@@ -134,6 +143,17 @@ export const VirtualPetAssistant: React.FC<VirtualPetAssistantProps> = ({
     return getDefaultPetPosition(vw, vh, WIDGET_SIZE, 28);
   });
 
+  const [soundMuted, setSoundMuted] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(PET_SOUND_MUTED_KEY) === 'true';
+    } catch {
+      return false;
+    }
+  });
+  const [proctorAlertNotice, setProctorAlertNotice] = useState<{
+    kind: ProctorAlertKind;
+    text: string;
+  } | null>(null);
   const [chatOpen, setChatOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [isHappy, setIsHappy] = useState(false);
@@ -151,9 +171,12 @@ export const VirtualPetAssistant: React.FC<VirtualPetAssistantProps> = ({
 
   const lastActivityRef = useRef<number>(Date.now());
   const lastEventRef = useRef<{ event: PetActivityEvent; atMs: number } | null>(null);
+  const lastProctorChimeAtRef = useRef<number>(0);
+  const alertNoticeTimerRef = useRef<number | null>(null);
   const bubbleTimerRef = useRef<number | null>(null);
   const happyTimerRef = useRef<number | null>(null);
   const particleTimersRef = useRef<Set<number>>(new Set());
+  const chatAbortRef = useRef<AbortController | null>(null);
   const rafDragRef = useRef<number | null>(null);
   const petWidgetRef = useRef<HTMLDivElement | null>(null);
   const pendingDragPosRef = useRef<{ x: number; y: number }>(position);
@@ -184,6 +207,15 @@ export const VirtualPetAssistant: React.FC<VirtualPetAssistantProps> = ({
     setPetId(nextPet);
     try {
       localStorage.setItem(PET_STORAGE_KEY, nextPet);
+    } catch {
+      // Ignore
+    }
+  }, []);
+
+  const updateSoundMuted = useCallback((nextMuted: boolean) => {
+    setSoundMuted(nextMuted);
+    try {
+      localStorage.setItem(PET_SOUND_MUTED_KEY, String(nextMuted));
     } catch {
       // Ignore
     }
@@ -245,13 +277,41 @@ export const VirtualPetAssistant: React.FC<VirtualPetAssistantProps> = ({
     [petMeta.greetingWords, showBubble, spawnParticles]
   );
 
-  // React to meaningful app activity signals (exam submitted -> proud, violation -> concerned, sheets exported -> proud, etc.)
+  // React to meaningful app activity signals (proctor warning audio alert, exam submitted -> proud, etc.)
   useEffect(() => {
     if (!activitySignal) return;
     const now = Date.now();
     lastActivityRef.current = now;
 
-    if (activitySignal.event === 'exam_submitted_normal') {
+    if (activitySignal.event === 'proctor_warning') {
+      const kind: ProctorAlertKind = activitySignal.kind || 'teacher';
+      const alertText = formatProctorPetAlertBubble(kind, activitySignal.detail);
+      lastEventRef.current = { event: 'proctor_warning', atMs: now };
+      setCurrentMood('concerned');
+      setProctorAlertNotice({ kind, text: alertText });
+      showBubble(alertText, 8500);
+
+      if (alertNoticeTimerRef.current !== null) {
+        window.clearTimeout(alertNoticeTimerRef.current);
+      }
+      alertNoticeTimerRef.current = window.setTimeout(() => {
+        alertNoticeTimerRef.current = null;
+        setProctorAlertNotice(null);
+      }, 8500);
+
+      const audioDecision = shouldPlayProctorAlertAudio({
+        lastPlayedMs: lastProctorChimeAtRef.current,
+        nowMs: now,
+        muted: soundMuted,
+        kind,
+      });
+      if (audioDecision.shouldPlay) {
+        const played = playProctorNotificationChime(kind);
+        if (played) {
+          lastProctorChimeAtRef.current = now;
+        }
+      }
+    } else if (activitySignal.event === 'exam_submitted_normal') {
       lastEventRef.current = { event: 'exam_submitted_normal', atMs: now };
       setCurrentMood('proud');
       spawnParticles(6);
@@ -287,15 +347,17 @@ export const VirtualPetAssistant: React.FC<VirtualPetAssistantProps> = ({
       lastEventRef.current = null;
       setCurrentMood('idle');
     }
-  }, [activitySignal, petMeta.name, showBubble, spawnParticles]);
+  }, [activitySignal, petMeta.name, showBubble, soundMuted, spawnParticles]);
 
-  // Clean up all timers and animation frames on unmount
+  // Clean up all timers, pending fetches, and animation frames on unmount
   useEffect(() => {
     const particleTimers = particleTimersRef.current;
     return () => {
       if (bubbleTimerRef.current !== null) window.clearTimeout(bubbleTimerRef.current);
       if (happyTimerRef.current !== null) window.clearTimeout(happyTimerRef.current);
+      if (alertNoticeTimerRef.current !== null) window.clearTimeout(alertNoticeTimerRef.current);
       if (rafDragRef.current !== null) window.cancelAnimationFrame(rafDragRef.current);
+      chatAbortRef.current?.abort();
       particleTimers.forEach((id) => window.clearTimeout(id));
       particleTimers.clear();
     };
@@ -527,11 +589,16 @@ export const VirtualPetAssistant: React.FC<VirtualPetAssistantProps> = ({
     setMessages(nextHistory);
     setInput('');
     setLoading(true);
+    chatAbortRef.current?.abort();
+    const controller = new AbortController();
+    chatAbortRef.current = controller;
+    const timeoutId = window.setTimeout(() => controller.abort(), 25_000);
 
     try {
       const res = await fetch('/api/gemini/pet-assistant', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
           message: clean,
           history: nextHistory.slice(-8).map((m) => ({ role: m.role, text: m.text })),
@@ -579,15 +646,22 @@ export const VirtualPetAssistant: React.FC<VirtualPetAssistantProps> = ({
           executedLabels: executedLabels.length > 0 ? executedLabels : undefined,
         },
       ]);
-    } catch {
+    } catch (err) {
       setMessages((prev) => [
         ...prev,
         {
           role: 'model',
-          text: 'Koneksi ke server AI sedang terputus. Periksa jaringan lalu coba kirim ulang.',
+          text:
+            err instanceof DOMException && err.name === 'AbortError'
+              ? 'Asisten sedang sibuk atau waktu tunggu habis. Silakan kirim ulang dalam beberapa detik.'
+              : 'Koneksi ke server AI sedang terputus. Periksa jaringan lalu coba kirim ulang.',
         },
       ]);
     } finally {
+      window.clearTimeout(timeoutId);
+      if (chatAbortRef.current === controller) {
+        chatAbortRef.current = null;
+      }
       setLoading(false);
     }
   };
@@ -623,19 +697,36 @@ export const VirtualPetAssistant: React.FC<VirtualPetAssistantProps> = ({
   // Compact unobtrusive restore button when hidden so student/teacher never loses access
   if (hidden) {
     return (
-      <button
-        type="button"
-        onClick={() => {
-          updateHiddenState(false);
-          triggerJoyfulReaction(`Halo lagi! ${petMeta.name} siap membantu!`);
-        }}
-        aria-label="Tampilkan Asisten Hewan Peliharaan"
-        title="Panggil kembali Asisten Hewan AI"
-        className="btn-press glass-modal fixed bottom-4 right-4 z-40 inline-flex items-center gap-1.5 rounded-2xl px-3 py-2 text-xs font-semibold text-slate-800 shadow-md hover:bg-white no-print"
-      >
-        <Eye className="h-3.5 w-3.5 text-emerald-700" />
-        <span className="hidden sm:inline whitespace-nowrap">Panggil {petMeta.name}</span>
-      </button>
+      <div className="no-print fixed bottom-4 right-4 z-40 flex flex-col items-end gap-2">
+        {proctorAlertNotice && (
+          <div
+            role="alert"
+            data-testid="pet-proctor-alert-toast"
+            className="glass-modal max-w-xs rounded-2xl border border-red-400/80 bg-red-50/95 px-3.5 py-2.5 text-xs font-semibold text-red-950 shadow-lg"
+          >
+            <div className="flex items-center gap-1.5 text-[11px] font-bold text-red-700 mb-0.5">
+              <BellRing className="h-3.5 w-3.5 animate-bounce shrink-0" />
+              <span>Notifikasi Pengawasan · {petMeta.name}</span>
+            </div>
+            <p className="leading-snug">{proctorAlertNotice.text}</p>
+          </div>
+        )}
+        <button
+          type="button"
+          onClick={() => {
+            updateHiddenState(false);
+            triggerJoyfulReaction(`Halo lagi! ${petMeta.name} siap membantu!`);
+          }}
+          aria-label="Tampilkan Asisten Hewan Peliharaan"
+          title="Panggil kembali Asisten Hewan AI"
+          className={`btn-press glass-modal inline-flex items-center gap-1.5 rounded-2xl px-3 py-2 text-xs font-semibold text-slate-800 shadow-md hover:bg-white ${
+            proctorAlertNotice ? 'ring-2 ring-red-500/80' : ''
+          }`}
+        >
+          <Eye className="h-3.5 w-3.5 text-emerald-700" />
+          <span className="hidden sm:inline whitespace-nowrap">Panggil {petMeta.name}</span>
+        </button>
+      </div>
     );
   }
 
@@ -668,16 +759,28 @@ export const VirtualPetAssistant: React.FC<VirtualPetAssistantProps> = ({
             ))}
           </div>
 
-          {/* High-Contrast Frosted Speech Bubble */}
+          {/* High-Contrast Frosted Speech Bubble (Elevated warning styling during proctoring alert) */}
           {speechBubble && !settingsOpen && (
             <div
-              role="status"
-              className={`glass-modal pointer-events-none absolute w-56 rounded-2xl px-3.5 py-2.5 text-[11px] font-semibold leading-snug text-slate-900 shadow-lg ${
+              role={proctorAlertNotice ? 'alert' : 'status'}
+              data-testid={proctorAlertNotice ? 'pet-proctor-speech-alert' : 'pet-speech-bubble'}
+              className={`glass-modal pointer-events-none absolute w-60 rounded-2xl px-3.5 py-2.5 text-[11px] font-semibold leading-snug shadow-lg ${
+                proctorAlertNotice
+                  ? 'border border-red-400/80 bg-red-50/95 text-red-950'
+                  : 'text-slate-900'
+              } ${
                 isNearTopEdge ? 'top-[96px]' : 'bottom-[96px]'
               } ${isNearLeftEdge ? 'left-0' : 'right-0'}`}
             >
-              <p className="text-[10px] font-bold text-emerald-800 mb-0.5">
-                {petMeta.name} · {petMeta.speciesLabel}
+              <p
+                className={`flex items-center gap-1 text-[10px] font-bold mb-0.5 ${
+                  proctorAlertNotice ? 'text-red-700' : 'text-emerald-800'
+                }`}
+              >
+                {proctorAlertNotice && <BellRing className="h-3 w-3 animate-bounce shrink-0" />}
+                <span>
+                  {petMeta.name} · {proctorAlertNotice ? 'Peringatan Pengawasan' : petMeta.speciesLabel}
+                </span>
               </p>
               <p>{speechBubble}</p>
             </div>
@@ -742,8 +845,24 @@ export const VirtualPetAssistant: React.FC<VirtualPetAssistantProps> = ({
             </div>
           )}
 
-          {/* Quick Corner Micro-Controls (Switch Character & Hide) */}
-          <div className="absolute -top-2 -right-1 z-10 flex items-center gap-1">
+          {/* Quick Corner Micro-Controls (Sound Alert Toggle, Switch Character & Hide) */}
+          <div className="absolute -top-2 -right-2 z-10 flex items-center gap-1">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                updateSoundMuted(!soundMuted);
+              }}
+              aria-label={soundMuted ? 'Aktifkan suara notifikasi asisten' : 'Bisukan suara notifikasi asisten'}
+              title={soundMuted ? 'Suara Notifikasi Dibisukan (Klik untuk Aktifkan)' : 'Suara Notifikasi Pengawasan Aktif'}
+              className={`btn-press flex h-6 w-6 items-center justify-center rounded-full border shadow-xs backdrop-blur-md ${
+                soundMuted
+                  ? 'border-amber-300/80 bg-amber-50/90 text-amber-700 hover:bg-amber-100'
+                  : 'border-white/80 bg-white/90 text-emerald-700 hover:bg-white'
+              }`}
+            >
+              {soundMuted ? <VolumeX className="h-3 w-3" /> : <Volume2 className="h-3 w-3" />}
+            </button>
             <button
               type="button"
               onClick={(e) => {
@@ -782,7 +901,11 @@ export const VirtualPetAssistant: React.FC<VirtualPetAssistantProps> = ({
             }}
             aria-label={`Buka Asisten AI ${petMeta.name} (${petMeta.speciesLabel}) · Mood ${moodMeta.label} — geser untuk memindahkan`}
             style={{ touchAction: 'none' }}
-            className={`group relative flex h-[84px] w-[84px] cursor-grab active:cursor-grabbing flex-col items-center justify-center rounded-3xl border bg-gradient-to-br ${petMeta.accentBg} ${petMeta.ringColor} backdrop-blur-xl shadow-[0_14px_30px_-10px_rgba(15,23,42,0.22),inset_0_1px_0_rgba(255,255,255,0.85)] transition-transform duration-200 hover:scale-105`}
+            className={`group relative flex h-[84px] w-[84px] cursor-grab active:cursor-grabbing flex-col items-center justify-center rounded-3xl border bg-gradient-to-br ${petMeta.accentBg} ${
+              proctorAlertNotice
+                ? 'border-red-500 ring-4 ring-red-500/35 animate-pulse'
+                : petMeta.ringColor
+            } backdrop-blur-xl shadow-[0_14px_30px_-10px_rgba(15,23,42,0.22),inset_0_1px_0_rgba(255,255,255,0.85)] transition-transform duration-200 hover:scale-105`}
           >
             <PetCharacterSvg
               petId={petId}
@@ -847,6 +970,15 @@ export const VirtualPetAssistant: React.FC<VirtualPetAssistantProps> = ({
             </div>
 
             <div className="flex items-center gap-1 shrink-0">
+              <button
+                type="button"
+                onClick={() => updateSoundMuted(!soundMuted)}
+                title={soundMuted ? 'Aktifkan suara notifikasi asisten' : 'Bisukan suara notifikasi asisten'}
+                aria-label={soundMuted ? 'Aktifkan suara notifikasi asisten' : 'Bisukan suara notifikasi asisten'}
+                className="btn-press rounded-xl p-1.5 text-slate-200 hover:bg-white/15"
+              >
+                {soundMuted ? <VolumeX className="h-4 w-4 text-amber-300" /> : <Volume2 className="h-4 w-4" />}
+              </button>
               <button
                 type="button"
                 onClick={() => updateHiddenState(true)}

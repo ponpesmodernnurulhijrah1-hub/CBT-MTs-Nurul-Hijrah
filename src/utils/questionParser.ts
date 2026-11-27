@@ -244,7 +244,7 @@ function extractConsolidatedAnswerKeys(html: string): {
   answerMap: Map<number, ConsolidatedAnswerInfo>;
 } {
   const answerMap = new Map<number, ConsolidatedAnswerInfo>();
-  const headingRegex = /(?:<[^>]+>\s*)*(?:KUNCI\s+JAWABAN|PEMBAHASAN\s*(?:&amp;|&|DAN)\s*KUNCI|ANSWER\s+KEY)\b/gi;
+  const headingRegex = /(?:<(?!\/)[^>]+>\s*)*(?:KUNCI\s+JAWABAN|PEMBAHASAN\s*(?:&amp;|&|DAN)\s*KUNCI|ANSWER\s+KEY)\b/gi;
 
   let lastMatch: RegExpExecArray | null = null;
   let m: RegExpExecArray | null;
@@ -286,7 +286,12 @@ function findBlockBoundaryStart(html: string, idx: number): number {
   const hIdx = Math.max(before.lastIndexOf('<h1'), before.lastIndexOf('<h2'), before.lastIndexOf('<h3'), before.lastIndexOf('<h4'));
   const brIdx = before.lastIndexOf('<br');
   const candidate = Math.max(pIdx, divIdx, hIdx, brIdx);
-  return candidate !== -1 && idx - candidate < 60 ? candidate : idx;
+  if (candidate === -1 || idx - candidate >= 60) return idx;
+  const between = before.slice(candidate);
+  if (/<\/(?:p|div|h[1-6]|li|tr|table)>/i.test(between)) {
+    return idx;
+  }
+  return candidate;
 }
 
 function parseConsolidatedKeyText(plainText: string): Map<number, ConsolidatedAnswerInfo> {

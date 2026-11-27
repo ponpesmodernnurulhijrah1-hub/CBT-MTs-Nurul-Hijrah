@@ -25,7 +25,12 @@ import { usePerformanceProfiler } from './hooks/usePerformanceProfiler';
 import { LivingFluidCanvas } from './components/LivingFluidCanvas';
 import type { TeacherTab } from './components/TeacherTutorAssistant';
 import type { AdminTab } from './components/AdminPortal';
-import type { PetActivityEvent, PetAppContextSummary, PetClientAction } from './utils/virtualPetUtils';
+import type {
+  PetActivityEvent,
+  PetAppContextSummary,
+  PetClientAction,
+  ProctorAlertKind,
+} from './utils/virtualPetUtils';
 
 const QRInstallModal = lazy(() =>
   retryLazyImport(() => import('./components/QRInstallModal')).then((m) => ({
@@ -389,9 +394,12 @@ export default function App() {
     }
   }, [store.admins, loggedAdmin]);
 
-  const emitPetActivity = useCallback((event: PetActivityEvent, detail?: string) => {
-    setPetActivitySignal({ id: Date.now() + Math.random(), event, detail });
-  }, []);
+  const emitPetActivity = useCallback(
+    (event: PetActivityEvent, detail?: string, kind?: ProctorAlertKind) => {
+      setPetActivitySignal({ id: Date.now() + Math.random(), event, detail, kind });
+    },
+    []
+  );
 
   const openGoogleSheetsModal = useCallback((targetResults: ExamResult[], defaultTitle?: string) => {
     setGoogleSheetsState({
@@ -753,6 +761,7 @@ export default function App() {
               onUpsertLiveStream={store.upsertLiveStream}
               onDeleteLiveStream={store.deleteLiveStream}
               onOpenQRInstall={() => setQrModalOpen(true)}
+              onProctorWarning={(detail, kind) => emitPetActivity('proctor_warning', detail, kind)}
               externalPrefill={studentPrefill}
             />
           </div>

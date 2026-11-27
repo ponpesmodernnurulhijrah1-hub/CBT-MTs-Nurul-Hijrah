@@ -59,6 +59,8 @@ import {
 } from '../utils/violationTracker';
 import { useStudentWebRTCPublisher } from '../hooks/useWebRTCProctor';
 import { useActiveMotionFlag, useLiquidMorphPill, useQuestionSlideDirection } from '../hooks/useLiquidMotion';
+import { evaluateProctorHeartbeatDecision, shuffleFisherYates } from '../utils/concurrencyUtils';
+import type { ProctorAlertKind } from '../utils/virtualPetUtils';
 
 interface StudentPortalProps {
   classes: ClassItem[];
@@ -69,6 +71,7 @@ interface StudentPortalProps {
   onUpsertLiveStream: (session: LiveStreamSession) => Promise<void>;
   onDeleteLiveStream: (sessionId: string) => Promise<void>;
   onOpenQRInstall: () => void;
+  onProctorWarning?: (detail: string, kind: ProctorAlertKind) => void;
   externalPrefill?: {
     id: number;
     namaSiswa?: string;
@@ -89,6 +92,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
   onUpsertLiveStream,
   onDeleteLiveStream,
   onOpenQRInstall,
+  onProctorWarning,
   externalPrefill,
 }) => {
   const [stage, setStage] = useState<StudentViewStage>('lobby');
@@ -132,6 +136,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
   const [exitGraceReturned, setExitGraceReturned] = useState(false);
   const [lastExitSource, setLastExitSource] = useState('');
   const [securityBanner, setSecurityBanner] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [timerToast, setTimerToast] = useState<string | null>(null);
   const [persistentAlarmOnSummary, setPersistentAlarmOnSummary] = useState(false);
 
@@ -352,12 +357,13 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
     [onDeleteLiveStream]
   );
 
-  // UNIFIED SUBMIT HANDLER (100% identical path for Normal & Pelanggaran, awaits DB before exit)
+  // UNIFIED SUBMIT HANDLER (100% identical path for Normal & Pelanggaran, awaits DB before exit with error recovery)
   const handleUnifiedSubmit = useCallback(
     async (status: ExamSubmissionStatus, reason?: string) => {
       if (submittedRef.current || !activeExam) return;
       submittedRef.current = true;
       setIsSubmitting(true);
+      setSubmitError(null);
       setShowConfirmSubmit(false);
 
       exitStartedAtRef.current = null;
@@ -402,21 +408,33 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
         violationHistory: finalViolationHistory,
       });
 
-      // CRITICAL: await database save 100% BEFORE stopping camera/mic or leaving screen!
-      await onSubmitExamResult(payload);
-      archiveStudentViolationsForResult({
-        resultId: payload.id,
-        examId: activeExam.id,
-        namaSiswa,
-        kelas,
-        entries: finalViolationHistory,
-      });
-      await stopHardwareAndFullscreen(sessionId, isViolation);
+      try {
+        // CRITICAL: await database save 100% BEFORE stopping camera/mic or leaving screen!
+        await onSubmitExamResult(payload);
+        archiveStudentViolationsForResult({
+          resultId: payload.id,
+          examId: activeExam.id,
+          namaSiswa,
+          kelas,
+          entries: finalViolationHistory,
+        });
+        await stopHardwareAndFullscreen(sessionId, isViolation);
 
-      setSubmittedSummary(payload);
-      setStage('submitted');
-      onExamActiveChange(false);
-      setIsSubmitting(false);
+        setSubmittedSummary(payload);
+        setStage('submitted');
+        onExamActiveChange(false);
+      } catch (err) {
+        submittedRef.current = false;
+        const msg =
+          err instanceof Error && err.message
+            ? err.message
+            : 'Gagal mengirim jawaban ke server karena jaringan sibuk.';
+        setSubmitError(
+          `${msg} Jawaban Anda masih tersimpan aman di perangkat — klik "Selesai & Kirim Jawaban" untuk mencoba lagi.`
+        );
+      } finally {
+        setIsSubmitting(false);
+      }
     },
     [
       activeExam,
@@ -436,6 +454,9 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
   const handleUnifiedSubmitRef = useRef(handleUnifiedSubmit);
   handleUnifiedSubmitRef.current = handleUnifiedSubmit;
 
+  const onProctorWarningRef = useRef(onProctorWarning);
+  onProctorWarningRef.current = onProctorWarning;
+
   // React instantly if Guru / Admin stops/deactivates this exam remotely via real-time sync
   useEffect(() => {
     if (stage !== 'exam' || !activeExam || submittedRef.current) return;
@@ -453,6 +474,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
     localStream,
     onRemoteWarning: useCallback((msg: string) => {
       setSecurityBanner(msg);
+      onProctorWarningRef.current?.(msg, 'teacher');
       // Do not replace an ongoing continuous app-exit alarm with a 3.2s timed siren
       if (exitStartedAtRef.current === null && !submittedRef.current) {
         playLoudSiren(3200);
@@ -564,6 +586,10 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
       exitStartedAtRef.current = now;
       setExitGraceReturned(false);
       setExitGraceSecondsLeft(APP_EXIT_GRACE_SECONDS);
+      onProctorWarningRef.current?.(
+        `Peringatan ke-${evalResult.nextCount}/${MAX_APP_EXIT_CHANCES}: ${sourceLabel}`,
+        'violation'
+      );
       setSecurityBanner(
         `ALARM PELANGGARAN (${evalResult.nextCount}/${MAX_APP_EXIT_CHANCES}): Terdeteksi ${sourceLabel}! Segera kembali dalam ${APP_EXIT_GRACE_SECONDS} detik atau jawaban otomatis dikirim.`
       );
@@ -732,85 +758,141 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
       }
     }, 200);
 
-    // Live Camera Preview Snapshot + Camera/Face Presence Check + Live Stream Sync loop (every 2500ms)
+    // Instantiate FaceDetector once outside the polling loop to avoid GC churn
+    const DetectorCtor = (
+      window as unknown as {
+        FaceDetector?: new () => { detect: (img: HTMLCanvasElement) => Promise<unknown[]> };
+      }
+    ).FaceDetector;
+    let cachedDetector: { detect: (img: HTMLCanvasElement) => Promise<unknown[]> } | null = null;
+    if (DetectorCtor) {
+      try {
+        cachedDetector = new DetectorCtor();
+      } catch {
+        cachedDetector = null;
+      }
+    }
+
+    let isProctorTickRunning = false;
+    let lastHeartbeatAtMs = Date.now();
+    let lastSnapshotAtMs = Date.now();
+    let lastTelemetrySignature = `${faceWarningsRef.current}|${tabViolationsRef.current}|${faceStatusRef.current}`;
+
+    // Adaptive Live Camera Preview Snapshot + Camera/Face Presence Check + Live Stream Sync loop
     const proctorLoopId = window.setInterval(async () => {
-      if (submittedRef.current) return;
-      const videoEl = videoRef.current;
-      const canvasEl = snapshotCanvasRef.current;
-      let snapshotPreview: string | undefined;
-      let currentFaceStatus = 'Wajah Terdeteksi';
+      if (submittedRef.current || isProctorTickRunning) return;
+      isProctorTickRunning = true;
+      try {
+        const nowMs = Date.now();
+        const videoEl = videoRef.current;
+        const canvasEl = snapshotCanvasRef.current;
+        let currentFaceStatus = 'Wajah Terdeteksi';
+        let canvasReadyForSnapshot = false;
 
-      if (videoEl && canvasEl && videoEl.readyState >= 2) {
-        try {
-          canvasEl.width = 160;
-          canvasEl.height = 120;
-          const ctx = canvasEl.getContext('2d');
-          if (ctx) {
-            ctx.drawImage(videoEl, 0, 0, 160, 120);
-            snapshotPreview = canvasEl.toDataURL('image/jpeg', 0.45);
+        if (videoEl && canvasEl && videoEl.readyState >= 2) {
+          try {
+            canvasEl.width = 160;
+            canvasEl.height = 120;
+            const ctx = canvasEl.getContext('2d');
+            if (ctx) {
+              ctx.drawImage(videoEl, 0, 0, 160, 120);
+              canvasReadyForSnapshot = true;
 
-            // Lightweight pixel luminance/variance check for covered/blocked camera
-            const imgData = ctx.getImageData(20, 15, 120, 90).data;
-            let sum = 0;
-            let sumSq = 0;
-            const pixels = imgData.length / 4;
-            for (let i = 0; i < imgData.length; i += 4) {
-              const luma = 0.299 * imgData[i] + 0.587 * imgData[i + 1] + 0.114 * imgData[i + 2];
-              sum += luma;
-              sumSq += luma * luma;
-            }
-            const mean = pixels > 0 ? sum / pixels : 0;
-            const stdDev = pixels > 0 ? Math.sqrt(Math.max(0, sumSq / pixels - mean * mean)) : 0;
-            if (mean < 12 && stdDev < 6) {
-              currentFaceStatus = 'Kamera Tertutup';
-              faceWarningsRef.current += 1;
-              setFaceWarnings(faceWarningsRef.current);
-            } else {
-              const Detector = (
-                window as unknown as {
-                  FaceDetector?: new () => { detect: (img: HTMLCanvasElement) => Promise<unknown[]> };
-                }
-              ).FaceDetector;
-              if (Detector) {
+              // Lightweight pixel luminance/variance check for covered/blocked camera
+              const imgData = ctx.getImageData(20, 15, 120, 90).data;
+              let sum = 0;
+              let sumSq = 0;
+              const pixels = imgData.length / 4;
+              for (let i = 0; i < imgData.length; i += 4) {
+                const luma = 0.299 * imgData[i] + 0.587 * imgData[i + 1] + 0.114 * imgData[i + 2];
+                sum += luma;
+                sumSq += luma * luma;
+              }
+              const mean = pixels > 0 ? sum / pixels : 0;
+              const stdDev = pixels > 0 ? Math.sqrt(Math.max(0, sumSq / pixels - mean * mean)) : 0;
+              if (mean < 12 && stdDev < 6) {
+                currentFaceStatus = 'Kamera Tertutup';
+                faceWarningsRef.current += 1;
+                setFaceWarnings(faceWarningsRef.current);
+                onProctorWarningRef.current?.(
+                  'Kamera depan tampak tertutup atau terlalu gelap. Pastikan wajah terlihat jelas.',
+                  'face'
+                );
+              } else if (cachedDetector) {
                 try {
-                  const detector = new Detector();
-                  const faces = await detector.detect(canvasEl);
+                  const faces = await cachedDetector.detect(canvasEl);
                   if (!faces || faces.length === 0) {
                     currentFaceStatus = 'Wajah Tidak Terlihat';
                     faceWarningsRef.current += 1;
                     setFaceWarnings(faceWarningsRef.current);
+                    onProctorWarningRef.current?.(
+                      'Wajah tidak terdeteksi di kamera. Posisikan wajah di depan kamera.',
+                      'face'
+                    );
                   }
                 } catch {
                   // Native FaceDetector unavailable/unsupported on this context
                 }
               }
             }
+          } catch {
+            // Ignore canvas taint
           }
-        } catch {
-          // Ignore canvas taint
         }
+
+        const prevFaceStatus = faceStatusRef.current;
+        faceStatusRef.current = currentFaceStatus;
+        setFaceStatus(currentFaceStatus);
+
+        const currentTelemetrySignature = `${faceWarningsRef.current}|${tabViolationsRef.current}|${currentFaceStatus}`;
+        const hasPriorityChange =
+          currentFaceStatus !== 'Wajah Terdeteksi' && currentFaceStatus !== prevFaceStatus;
+
+        const decision = evaluateProctorHeartbeatDecision({
+          nowMs,
+          lastHeartbeatAtMs,
+          lastSnapshotAtMs,
+          lastTelemetrySignature,
+          currentTelemetrySignature,
+          hasPriorityChange,
+          heartbeatIntervalMs: 7_000,
+          snapshotIntervalMs: 14_000,
+        });
+
+        if (decision.shouldWriteDoc) {
+          let snapshotPreview: string | undefined;
+          if (decision.shouldIncludeSnapshot && canvasReadyForSnapshot && canvasEl) {
+            try {
+              snapshotPreview = canvasEl.toDataURL('image/jpeg', 0.42);
+              lastSnapshotAtMs = nowMs;
+            } catch {
+              // Ignore canvas serialization error
+            }
+          }
+          lastHeartbeatAtMs = nowMs;
+          lastTelemetrySignature = currentTelemetrySignature;
+
+          onUpsertLiveStream({
+            sessionId,
+            namaSiswa,
+            noPeserta: noPeserta.trim() || undefined,
+            kelas,
+            mataPelajaran: activeExam.mataPelajaran,
+            judulUjian: activeExam.judulUjian,
+            examId: activeExam.id,
+            status: 'aktif',
+            audioLevel: audioLevelRef.current,
+            pelanggaranTab: tabViolationsRef.current,
+            peringatanWajah: faceWarningsRef.current,
+            lastFaceStatus: currentFaceStatus,
+            ...(snapshotPreview ? { snapshotPreview } : {}),
+            updatedAt: nowMs,
+          }).catch(() => {});
+        }
+      } finally {
+        isProctorTickRunning = false;
       }
-
-      faceStatusRef.current = currentFaceStatus;
-      setFaceStatus(currentFaceStatus);
-
-      onUpsertLiveStream({
-        sessionId,
-        namaSiswa,
-        noPeserta: noPeserta.trim() || undefined,
-        kelas,
-        mataPelajaran: activeExam.mataPelajaran,
-        judulUjian: activeExam.judulUjian,
-        examId: activeExam.id,
-        status: 'aktif',
-        audioLevel: audioLevelRef.current,
-        pelanggaranTab: tabViolationsRef.current,
-        peringatanWajah: faceWarningsRef.current,
-        lastFaceStatus: currentFaceStatus,
-        snapshotPreview,
-        updatedAt: Date.now(),
-      }).catch(() => {});
-    }, 2500);
+    }, 3000);
 
     return () => {
       window.clearInterval(audioMeterId);
@@ -862,11 +944,10 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
       const newSessionId = `sess_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
       setSessionId(newSessionId);
 
-      // Prepare question order
-      const qs = [...targetExam.questionsSnapshot];
-      if (targetExam.acakSoal) {
-        qs.sort(() => Math.random() - 0.5);
-      }
+      // Prepare question order using unbiased Fisher-Yates shuffle
+      const qs = targetExam.acakSoal
+        ? shuffleFisherYates(targetExam.questionsSnapshot)
+        : [...targetExam.questionsSnapshot];
 
       submittedRef.current = false;
       tabViolationsRef.current = 0;
@@ -1685,6 +1766,36 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
             >
               Tutup
             </button>
+          </div>
+        )}
+
+        {/* Submit Network Error Recovery Banner */}
+        {submitError && (
+          <div
+            role="alert"
+            className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-amber-400/80 bg-amber-50/90 backdrop-blur-md px-4 py-3 text-xs font-semibold text-amber-950 shadow-sm panel-enter"
+          >
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 shrink-0 text-amber-700" />
+              <span>{submitError}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                disabled={isSubmitting}
+                onClick={() => handleUnifiedSubmit('Selesai', 'Kirim ulang setelah gangguan jaringan')}
+                className="btn-press rounded-xl bg-emerald-700 px-3 py-1.5 text-[11px] font-bold text-white hover:bg-emerald-800 disabled:opacity-50"
+              >
+                Coba Kirim Ulang
+              </button>
+              <button
+                type="button"
+                onClick={() => setSubmitError(null)}
+                className="btn-press rounded-xl border border-amber-300 bg-white/70 px-2.5 py-1.5 text-[11px] font-semibold text-amber-900 hover:bg-white"
+              >
+                Tutup
+              </button>
+            </div>
           </div>
         )}
 

@@ -140,6 +140,7 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [internalTab, setInternalTab] = useState<TeacherTab>('analitik');
   const activeTab = controlledTab ?? internalTab;
   const setActiveTab = (next: TeacherTab) => {
@@ -175,19 +176,31 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isLoggingIn) return;
     setLoginError(null);
     if (!username.trim() || !password) {
       setLoginError('Masukkan username dan password akun guru.');
       return;
     }
-    const found = await onAuthenticate(username, password);
-    if (!found) {
-      setLoginError('Username atau password tidak cocok, atau akun sedang dinonaktifkan.');
-      return;
+    setIsLoggingIn(true);
+    try {
+      const found = await onAuthenticate(username, password);
+      if (!found) {
+        setLoginError('Username atau password tidak cocok, atau akun sedang dinonaktifkan.');
+        return;
+      }
+      onSetLoggedTeacher(found);
+      setUsername('');
+      setPassword('');
+    } catch (err) {
+      setLoginError(
+        err instanceof Error && err.message
+          ? err.message
+          : 'Gagal memverifikasi akun guru. Coba lagi sebentar.'
+      );
+    } finally {
+      setIsLoggingIn(false);
     }
-    onSetLoggedTeacher(found);
-    setUsername('');
-    setPassword('');
   };
 
   // STRICT PRIVACY: Clean 2-Column Login Card with ZERO demo credentials / quick-login hints
@@ -285,9 +298,10 @@ export const TeacherPortal: React.FC<TeacherPortalProps> = ({
 
             <button
               type="submit"
-              className="btn-press w-full rounded-xl bg-emerald-700 px-4 py-3 text-sm font-bold text-white hover:bg-emerald-800 shadow-[0_10px_24px_-10px_rgba(4,120,87,0.55)]"
+              disabled={isLoggingIn}
+              className="btn-press w-full rounded-xl bg-emerald-700 px-4 py-3 text-sm font-bold text-white hover:bg-emerald-800 disabled:opacity-60 shadow-[0_10px_24px_-10px_rgba(4,120,87,0.55)]"
             >
-              Masuk ke Dashboard Guru
+              {isLoggingIn ? 'Memverifikasi Akun...' : 'Masuk ke Dashboard Guru'}
             </button>
           </form>
         </div>
