@@ -319,18 +319,237 @@ export function formatClientFetchError(
 ): string {
   if (serverMessage && serverMessage.trim()) return serverMessage.trim();
   if (err instanceof DOMException && err.name === 'AbortError') {
-    return 'Proses AI melebihi batas waktu koneksi. Coba bagi dokumen/jumlah soal menjadi lebih kecil atau gunakan mode Deteksi Cerdas Lokal (Gratis Tanpa Limit).';
+    return 'Proses AI melebihi batas waktu untuk bagian dokumen ini. Sistem akan otomatis membagi dokumen lebih kecil agar tetap berhasil.';
   }
   if (status === 413) {
-    return 'Ukuran dokumen/gambar terlalu besar untuk sekali kirim. Kurangi resolusi atau kirim bertahap.';
+    return 'Ukuran file/gambar dalam satu pengiriman terlalu besar. Perkecil resolusi atau kirim bertahap per halaman.';
   }
   if (status === 429) {
-    return 'Batas kecepatan/kuota gratis AI tercapai sementara. Tunggu beberapa detik lalu coba ulang, atau gunakan Deteksi Cerdas Lokal (Gratis Tanpa Limit).';
+    return 'Permintaan AI gratis sedang padat sesaat. Tunggu beberapa detik lalu klik Ekstrak ulang.';
   }
   if (status === 502 || status === 503 || status === 504) {
-    return 'Server AI sedang sibuk atau melebihi batas waktu sementara. Silakan coba lagi dalam beberapa detik.';
+    return 'Server AI sedang sibuk sementara. Silakan klik Ekstrak ulang beberapa detik lagi.';
   }
-  return 'Koneksi ke server AI terganggu. Periksa jaringan atau gunakan Deteksi Cerdas Lokal (Gratis Tanpa Limit).';
+  return 'Koneksi jaringan ke endpoint AI terputus sementara. Pastikan aplikasi berjalan penuh melalui server dan coba kirim ulang.';
+}
+
+export interface RetryFetchOptions {
+  url: string;
+  init: RequestInit;
+  timeoutMs?: number;
+  maxRetries?: number;
+  baseDelayMs?: number;
+  fetchImpl?: typeof fetch;
+  onRetry?: (attempt: number, reason: string) => void;
+}
+
+export interface RetryFetchResult<T> {
+  ok: boolean;
+  status: number;
+  data: T | null;
+  rawText: string;
+  errorMessage?: string;
+  wasTimeoutOrNetwork: boolean;
+  wasPayloadTooLarge: boolean;
+}
+
+/**
+ * Executes a JSON fetch request with bounded timeout and automatic exponential-backoff retries
+ * for transient network hiccups, timeouts, and 502/503/504/429 responses.
+ */
+export async function fetchJsonWithRetry<T>(
+  opts: RetryFetchOptions
+): Promise<RetryFetchResult<T>> {
+  const {
+    url,
+    init,
+    timeoutMs = 30_000,
+    maxRetries = 2,
+    baseDelayMs = 650,
+    fetchImpl = fetch,
+    onRetry,
+  } = opts;
+
+  let lastStatus = 0;
+  let lastData: T | null = null;
+  let lastRawText = '';
+  let lastErr: unknown = null;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+
+    try {
+      const res = await fetchImpl(url, {
+        ...init,
+        signal: controller ? controller.signal : init.signal,
+      });
+      if (timer !== null) clearTimeout(timer);
+
+      lastStatus = res.status;
+      const parsed = await safeParseResponseJson<T & { error?: string }>(res);
+      lastData = parsed.data;
+      lastRawText = parsed.rawText;
+
+      if (res.ok) {
+        return {
+          ok: true,
+          status: res.status,
+          data: parsed.data,
+          rawText: parsed.rawText,
+          wasTimeoutOrNetwork: false,
+          wasPayloadTooLarge: false,
+        };
+      }
+
+      const serverMsg =
+        parsed.data && typeof parsed.data === 'object' && typeof parsed.data.error === 'string'
+          ? parsed.data.error
+          : undefined;
+      const retryableStatus = res.status === 429 || res.status === 502 || res.status === 503 || res.status === 504;
+
+      if (retryableStatus && attempt < maxRetries) {
+        onRetry?.(attempt + 1, `HTTP ${res.status}`);
+        await new Promise((r) => setTimeout(r, baseDelayMs * Math.pow(2, attempt)));
+        continue;
+      }
+
+      return {
+        ok: false,
+        status: res.status,
+        data: parsed.data,
+        rawText: parsed.rawText,
+        errorMessage: formatClientFetchError(null, res.status, serverMsg),
+        wasTimeoutOrNetwork: res.status === 502 || res.status === 503 || res.status === 504,
+        wasPayloadTooLarge: res.status === 413,
+      };
+    } catch (err) {
+      if (timer !== null) clearTimeout(timer);
+      lastErr = err;
+      if (attempt < maxRetries) {
+        const reason = err instanceof DOMException && err.name === 'AbortError' ? 'timeout' : 'jaringan';
+        onRetry?.(attempt + 1, reason);
+        await new Promise((r) => setTimeout(r, baseDelayMs * Math.pow(2, attempt)));
+        continue;
+      }
+    }
+  }
+
+  return {
+    ok: false,
+    status: lastStatus,
+    data: lastData,
+    rawText: lastRawText,
+    errorMessage: formatClientFetchError(lastErr, lastStatus || undefined),
+    wasTimeoutOrNetwork: true,
+    wasPayloadTooLarge: lastStatus === 413,
+  };
+}
+
+/**
+ * Checks whether an HTML editor string contains meaningful visible text or media tags
+ * (ignoring empty `<br>`, `&nbsp;`, or empty `<p></p>` placeholders).
+ */
+export function hasMeaningfulHtmlContent(html: string): boolean {
+  if (!html) return false;
+  if (/<img\b|<table\b|<svg\b/i.test(html)) return true;
+  const plain = html
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .trim();
+  return plain.length > 0;
+}
+
+/**
+ * Escapes plain text safely before wrapping inside HTML tags.
+ */
+export function escapePlainTextForHtml(text: string): string {
+  return String(text || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+/**
+ * Sanitizes imported `.html`/`.htm` files by removing head/script/style blocks while
+ * preserving structural exam tags (`<table>`, `<img>`, lists, headings, formatting).
+ */
+export function sanitizeHtmlImport(rawHtml: string): string {
+  if (!rawHtml) return '';
+  const bodyMatch = rawHtml.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i);
+  const body = bodyMatch ? bodyMatch[1] : rawHtml;
+  return body
+    .replace(/<(head|script|style|noscript|iframe|object|embed)\b[^>]*>[\s\S]*?<\/\1>/gi, '')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .trim();
+}
+
+/**
+ * Converts basic RTF documents (`.rtf` exported from MS Word / WordPad / LibreOffice)
+ * into clean plain text while preserving line breaks and basic Unicode escapes.
+ */
+export function stripRtfToPlainText(rtf: string): string {
+  if (!rtf) return '';
+  let text = rtf;
+  // Decode RTF unicode escapes \uN?
+  text = text.replace(/\\u(-?\d+)\??/g, (_m, code) => {
+    const n = Number(code);
+    const charCode = n < 0 ? 65536 + n : n;
+    return Number.isFinite(charCode) ? String.fromCharCode(charCode) : '';
+  });
+  // Decode hex escapes \'hh
+  text = text.replace(/\\'([0-9a-fA-F]{2})/g, (_m, hex) =>
+    String.fromCharCode(parseInt(hex, 16))
+  );
+  // Drop header/metadata destinations while leaving a space boundary
+  text = text.replace(/\{\\(?:fonttbl|colortbl|stylesheet|info|pict|object|header|footer|fldinst)[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/gi, ' ');
+  // Convert paragraph/line/tab control words and strip remaining RTF control words
+  text = text
+    .replace(/\\(?:par|line)\b ?/g, '\n')
+    .replace(/\\tab\b ?/g, '\t')
+    .replace(/\\[a-zA-Z]+-?\d* ?/g, '')
+    .replace(/[{}]/g, '')
+    .replace(/\r\n/g, '\n')
+    .replace(/^[ \t]+/gm, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  return text;
+}
+
+/**
+ * Converts parsed spreadsheet rows (Excel / CSV / TSV / ODS) into structured readable lines
+ * or HTML table blocks so AI accurately extracts any tabular or columnar question bank.
+ */
+export function formatSpreadsheetRowsToHtml(rows: unknown[][], sheetName?: string): string {
+  if (!Array.isArray(rows) || rows.length === 0) return '';
+  const nonEmptyRows = rows
+    .map((row) => (Array.isArray(row) ? row.map((cell) => String(cell ?? '').trim()) : []))
+    .filter((row) => row.some(Boolean));
+  if (nonEmptyRows.length === 0) return '';
+
+  const maxCols = Math.max(...nonEmptyRows.map((r) => r.length));
+  const titleHtml = sheetName ? `<p><strong>Sheet: ${escapePlainTextForHtml(sheetName)}</strong></p>\n` : '';
+
+  if (maxCols <= 1) {
+    return (
+      titleHtml +
+      nonEmptyRows
+        .map((r) => `<p>${escapePlainTextForHtml(r[0] || '')}</p>`)
+        .join('\n')
+    );
+  }
+
+  const trs = nonEmptyRows
+    .map((row) => {
+      const tds = Array.from({ length: maxCols }, (_, i) => {
+        const val = row[i] || '';
+        return `<td>${escapePlainTextForHtml(val)}</td>`;
+      }).join('');
+      return `<tr>${tds}</tr>`;
+    })
+    .join('\n');
+
+  return `${titleHtml}<table><tbody>\n${trs}\n</tbody></table>`;
 }
 
 function normalizeQuestionType(rawType: unknown, opsiCount: number, rawKeys: string[]): QuestionType {
@@ -392,12 +611,17 @@ function expandKeyTokens(rawInput: unknown): string[] {
   return expanded;
 }
 
-function normalizeKeys(rawKeysInput: unknown, tipe: QuestionType, opsiCount: number): string[] {
+function normalizeKeys(
+  rawKeysInput: unknown,
+  tipe: QuestionType,
+  opsi: string[]
+): string[] {
   const expanded = expandKeyTokens(rawKeysInput);
+  const opsiCount = opsi.length;
 
   if (tipe === 'BENAR_SALAH') {
     const joined = expanded.join(' ').toLowerCase();
-    return [joined.includes('salah') || joined === 'false' ? 'Salah' : 'Benar'];
+    return [joined.includes('salah') || joined === 'false' || joined === 'b' ? 'Salah' : 'Benar'];
   }
 
   if (tipe === 'ESAI') {
@@ -412,7 +636,19 @@ function normalizeKeys(rawKeysInput: unknown, tipe: QuestionType, opsiCount: num
       const m = entry.toUpperCase().match(/^\(?([A-E])(?:[\.\)\]:\s]|$)/);
       if (m) return m[1];
       const fallback = entry.toUpperCase().match(/\b([A-E])\b/);
-      return fallback ? fallback[1] : '';
+      if (fallback) return fallback[1];
+      // Match option text directly if AI returned full answer text instead of letter A-E
+      const cleanEntry = entry.toLowerCase().replace(/\s+/g, ' ').trim();
+      if (cleanEntry && opsi.length > 0) {
+        const matchedIdx = opsi.findIndex((o) => {
+          const cleanOpt = o.replace(/<[^>]+>/g, ' ').toLowerCase().replace(/\s+/g, ' ').trim();
+          return cleanOpt === cleanEntry || (cleanEntry.length >= 4 && cleanOpt.includes(cleanEntry));
+        });
+        if (matchedIdx >= 0 && matchedIdx < validRange.length) {
+          return validRange[matchedIdx];
+        }
+      }
+      return '';
     })
     .filter((l): l is string => l.length === 1 && validRange.includes(l));
 
@@ -471,7 +707,7 @@ export function normalizeAiQuestions(
         : tipe === 'ESAI'
           ? []
           : rawOpsiList;
-    const kunciJawaban = normalizeKeys(obj.kunciJawaban, tipe, opsi.length);
+    const kunciJawaban = normalizeKeys(obj.kunciJawaban, tipe, opsi);
     const bobotNum = Number(obj.bobot);
     const bobot =
       Number.isFinite(bobotNum) && bobotNum > 0

@@ -75,7 +75,7 @@ function getGeminiClient(): GoogleGenAI | null {
   return cachedGeminiClient;
 }
 
-const teacherAiSemaphore = new AsyncSemaphore(5, 40, 25_000);
+const teacherAiSemaphore = new AsyncSemaphore(6, 50, 18_000);
 const interactiveAiSemaphore = new AsyncSemaphore(8, 80, 15_000);
 
 const teacherAiRateLimiter = new SlidingWindowRateLimiter(35, 60_000, 1000);
@@ -166,7 +166,7 @@ function formatGeminiErrorMessage(err: unknown): {
       status: 403,
       code: 'API_KEY_INVALID',
       message:
-        'API key Gemini tidak valid atau belum memiliki izin. Periksa GEMINI_API_KEY di panel Settings > Secrets, atau gunakan Deteksi Cerdas Lokal (Gratis Tanpa Limit).',
+        'Kunci API Gemini server tidak valid atau belum memiliki izin. Periksa GEMINI_API_KEY di panel Settings > Secrets.',
     };
   }
   if (upper.includes('PERDAY') || upper.includes('GENERATEREQUESTSPERDAY') || upper.includes('PER DAY')) {
@@ -174,14 +174,14 @@ function formatGeminiErrorMessage(err: unknown): {
       status: 429,
       code: 'DAILY_QUOTA_EXHAUSTED',
       message:
-        'Kuota permintaan harian AI gratis di server sedang penuh. Untuk teks/Word Anda bisa langsung memakai Deteksi Cerdas Lokal (Gratis Tanpa Limit).',
+        'Batas permintaan harian model AI gratis sedang penuh sesaat. Sistem mencoba model cadangan gratis atau silakan coba kembali beberapa saat lagi.',
     };
   }
   if (upper.includes('RESOURCE_EXHAUSTED') || upper.includes('429')) {
     return {
       status: 429,
       code: 'RATE_LIMIT',
-      message: 'Permintaan AI terlalu padat sesaat. Tunggu beberapa detik lalu coba ulang, atau gunakan Deteksi Cerdas Lokal (Gratis Tanpa Limit).',
+      message: 'Permintaan ke AI terlalu padat sesaat. Tunggu beberapa detik lalu coba ulang.',
     };
   }
   if (upper.includes('TIMEOUT') || upper.includes('DEADLINE_EXCEEDED')) {
@@ -189,7 +189,7 @@ function formatGeminiErrorMessage(err: unknown): {
       status: 504,
       code: 'TIMEOUT',
       message:
-        'Proses AI melebihi batas waktu karena dokumen terlalu padat/kompleks. Coba unggah sebagian halaman atau gunakan Deteksi Cerdas Lokal (Gratis Tanpa Limit).',
+        'Proses AI melebihi batas waktu karena halaman dokumen sangat padat. Sistem akan membagi bagian lebih kecil atau silakan kirim ulang.',
     };
   }
   if (upper.includes('UNAVAILABLE') || upper.includes('503') || upper.includes('HIGH DEMAND')) {
@@ -197,7 +197,7 @@ function formatGeminiErrorMessage(err: unknown): {
       status: 503,
       code: 'UNAVAILABLE',
       message:
-        'Server AI Gemini sedang mengalami lonjakan trafik sementara. Silakan klik ulang dalam beberapa detik.',
+        'Layanan Gemini AI sedang mengalami lonjakan trafik sementara. Silakan klik ulang dalam beberapa detik.',
     };
   }
   if (err instanceof QueueFullError) {
@@ -267,6 +267,7 @@ interface ResilienceCallOptions {
   systemInstruction: string;
   jsonSchema?: Schema;
   tools?: GenerateContentParameters['config'] extends { tools?: infer T } ? T : unknown[];
+  preferMinimalLite?: boolean;
 }
 
 const modelBackoffUntilMs: Record<string, number> = {};
@@ -328,13 +329,13 @@ async function executeGeminiWithResilience(ai: GoogleGenAI, opts: ResilienceCall
   const litePlan = {
     model: 'gemini-3.1-flash-lite',
     retries: 1,
-    timeoutMs: 36000,
-    thinkingLevel: ThinkingLevel.LOW,
+    timeoutMs: 22000,
+    thinkingLevel: opts.preferMinimalLite ? ThinkingLevel.MINIMAL : ThinkingLevel.LOW,
   };
   const hydrogenPlan = {
     model: 'gemini-4-hydrogen',
     retries: 0,
-    timeoutMs: 38000,
+    timeoutMs: 24000,
     thinkingLevel: ThinkingLevel.LOW,
   };
 
@@ -625,8 +626,7 @@ app.post('/api/gemini/parse-questions', async (req, res) => {
     if (!ai) {
       res.status(503).json({
         code: 'API_KEY_MISSING',
-        error:
-          'GEMINI_API_KEY belum terkonfigurasi di Settings > Secrets. Untuk teks/Word gunakan "Deteksi Cerdas Lokal (Gratis Tanpa Limit)".',
+        error: 'GEMINI_API_KEY belum terkonfigurasi di Settings > Secrets.',
       });
       return;
     }
@@ -655,107 +655,145 @@ app.post('/api/gemini/parse-questions', async (req, res) => {
       return;
     }
 
-    const chunks = compactHtml ? chunkHtmlForAi(compactHtml, 10500) : [];
+    const chunks = compactHtml ? chunkHtmlForAi(compactHtml, 4200) : [];
     const systemInstruction =
-      'Anda adalah pakar asesmen dan ekstraktor soal CBT madrasah MTs Nurul Hijrah yang sangat cerdas dan teliti. ' +
-      'Anda paham struktur dokumen Word (<ol>/<li> bernomor, nested list <ol type="a"> untuk opsi, daftar bernomor 1./2./3. DI DALAM badan soal sebelum opsi, tabel tata letak 2 kolom berisi opsi A-E, maupun opsi sebaris A. ... B. ... C. ... D. ...), teks bacaan stimulus lintas nomor, serta bagian Kunci Jawaban di akhir dokumen. ' +
-      'Selalu jaga keutuhan HTML tabel DATA (<table>, <thead>, <tbody>, <tr>, <th>, <td>), tag gambar (<img src="__CBT_IMG_...">), pemformatan <b>/<strong>/<i>/<sub>/<sup>, serta aksara Arab atau simbol matematika. ' +
-      'Opsi jawaban WAJIB bersih tanpa awalan A./B./C. dan berurutan A=opsi[0], B=opsi[1], C=opsi[2], D=opsi[3], E=opsi[4]. Pastikan huruf pada kunciJawaban PERSIS menunjuk indeks jawaban yang benar.';
+      'Anda adalah pakar ekstraktor & konverter soal CBT madrasah MTs Nurul Hijrah yang sangat cerdas dan mampu memahami SEGALA FORMAT dokumen. ' +
+      'Anda mampu membaca soal dari: HTML Microsoft Word (<ol>/<li>, nested list, tabel tata letak 2 kolom), Excel/CSV/TSV berbentuk tabel baris-kolom (Kolom Soal | Opsi A-E | Kunci), PDF teks maupun foto/scan dokumen, Markdown, JSON/XML, RTF, hingga teks mentah TANPA penomoran atau teks dengan nomor Romawi/Arab-Latin, opsi sebaris (a. ... b. ... c. ...), kunci jawaban di akhir dokumen ("Kunci Jawaban"), maupun tanda bintang/bold pada jawaban benar. ' +
+      'Selalu pertahankan HTML tabel DATA soal (<table>, <thead>, <tbody>, <tr>, <th>, <td>), tag gambar (<img src="__CBT_IMG_...">), pemformatan <b>/<strong>/<i>/<sub>/<sup>, aksara Arab berharakat, serta simbol matematika. ' +
+      'Opsi jawaban WAJIB bersih tanpa awalan A./B./C./1. dan berurutan A=opsi[0], B=opsi[1], C=opsi[2], D=opsi[3], E=opsi[4]. Pastikan huruf pada kunciJawaban PERSIS menunjuk indeks jawaban yang benar.';
 
     const allExtracted: ParsedQuestionDraft[] = [];
     let primaryModelUsed = 'gemini-3.1-flash-lite';
     let partialWarning: string | undefined;
-    const totalBatches = chunks.length + (validImages.length > 0 ? Math.ceil(validImages.length / 2) : 0);
+    const isHybridSinglePage = chunks.length === 1 && validImages.length > 0 && validImages.length <= 2;
+    const totalBatches = isHybridSinglePage
+      ? 1
+      : chunks.length + validImages.length;
 
-    // 1. Parse text/HTML chunks if any
-    if (chunks.length > 0) {
-      for (let i = 0; i < chunks.length; i++) {
-        if (i > 0) await sleep(150);
-        const chunkText = chunks[i];
-        const promptText = `Ekstrak seluruh butir soal ujian madrasah (Mata Pelajaran: ${mataPelajaran}, Bagian ${i + 1} dari ${chunks.length}) dari konten sumber berikut.
+    // Hybrid mode: when a PDF page or mixed paste provides BOTH extracted text AND page image(s) together
+    if (isHybridSinglePage) {
+      const imageParts = validImages.map((img) => ({
+        inlineData: { mimeType: img.mimeType, data: img.data },
+      }));
+      const hybridPrompt = {
+        parts: [
+          ...imageParts,
+          {
+            text: `Ekstrak seluruh butir soal ujian (Mata Pelajaran: ${mataPelajaran}) dari kombinasi teks dokumen dan gambar halaman terlampir secara lengkap, tidak duplikat, dan presisi.
+Aturan wajib:
+1. Gunakan gambar halaman sebagai acuan visual (tata letak 2 kolom, tabel, rumus pecahan, grafik, atau aksara Arab), dan gunakan teks dokumen di bawah untuk akurasi ejaan.
+2. Rekonstruksi tabel data soal ke HTML <table><thead>...<tbody>...</table>. Pertahankan gambar inline (<img src="__CBT_IMG_...">), <sub>/<sup>, dan aksara Arab.
+3. Pisahkan tiap soal menjadi objek terpisah, bersihkan opsi dari prefix A./B./C. (A=opsi[0], B=opsi[1], dst), klasifikasikan tipe secara akurat ("PG", "PG_KOMPLEKS", "BENAR_SALAH", "ESAI").
+4. ${
+              autoSolveMissingKeys
+                ? 'Ekstrak kunci jawaban jika tertera, atau analisis soal secara cermat untuk mengisi kunciJawaban yang tepat beserta pembahasan ringkas 1 kalimat dan tingkat kesulitan.'
+                : 'Ekstrak kunci jawaban jika tertulis di dokumen atau gambar.'
+            }
+
+Teks Dokumen Pendukung:
+${chunks[0]}`,
+          },
+        ],
+      };
+
+      const { response, modelUsed } = await callGeminiWithResilience(ai, {
+        contents: hybridPrompt,
+        systemInstruction,
+        jsonSchema: QUESTION_ARRAY_SCHEMA,
+        preferMinimalLite: false,
+      });
+      primaryModelUsed = modelUsed;
+      const parsedRaw = extractBalancedJsonArray(response.text ?? '[]');
+      allExtracted.push(...normalizeAiQuestions(parsedRaw, mergedAssets));
+    } else {
+      // 1. Parse text/HTML/spreadsheet/document chunks
+      if (chunks.length > 0) {
+        for (let i = 0; i < chunks.length; i++) {
+          if (i > 0) await sleep(120);
+          const chunkText = chunks[i];
+          const promptText = `Ekstrak seluruh butir soal ujian (Mata Pelajaran: ${mataPelajaran}, Bagian ${i + 1} dari ${chunks.length}) dari konten sumber berformat apa pun di bawah ini.
 
 Aturan wajib:
-1. Pertahankan seluruh tag HTML tabel data (<table>...</table>), gambar (<img src="__CBT_IMG_...">), bacaan stimulus, daftar pernyataan bernomor di dalam badan soal, aksara Arab, serta <sub>/<sup> di dalam pertanyaanHtml! JANGAN ubah placeholder __CBT_IMG_N__.
-2. Jika dokumen memiliki daftar <ol>/<li>, nested list <ol type="a">, opsi sebaris ("A. ... B. ... C. ... D. ..."), atau tabel 2 kolom khusus opsi, susun rapi ke array opsi (tanpa huruf awalan A./B./C.) dan hapus opsi dari pertanyaanHtml.
-3. Jika dokumen memiliki bagian "Kunci Jawaban" di akhir, cocokkan ke nomor soal yang sesuai dan JANGAN masukkan bagian Kunci Jawaban sebagai soal esai!
-4. Klasifikasikan tipe secara akurat:
-   - "PG": Pilihan Ganda 1 jawaban benar (opsi[0]=A, opsi[1]=B, opsi[2]=C, opsi[3]=D, dst).
-   - "PG_KOMPLEKS": Pilihan Ganda Kompleks dengan >1 jawaban benar.
-   - "BENAR_SALAH": Soal pernyataan Benar / Salah (opsi ["Benar", "Salah"]).
-   - "ESAI": Soal uraian / isian terbuka.
-5. ${
-          autoSolveMissingKeys
-            ? 'Ekstrak kunci jawaban jika tertulis dan verifikasi posisinya (A=opsi[0], B=opsi[1], dst); JIKA dokumen tidak mencantumkan kunci jawaban, analisis soalnya secara cerdas dan isikan kunciJawaban (huruf indeks yang tepat) beserta pembahasan singkat 1 kalimat!'
-            : 'Ekstrak kunci jawaban sesuai teks sumber (pastikan huruf kunci cocok tepat dengan indeks opsi: A=opsi[0], B=opsi[1], dst).'
-        }
-6. Isikan tingkat kesulitan ("Mudah" | "Sedang" | "Sulit") dan pembahasan 1 kalimat ringkas.
+1. Deteksi soal dalam format apa saja: bernomor (1., (1), 1), Soal 1, I., ١.), TIDAK bernomor/paragraf terpisah, tabel spreadsheet/Excel/HTML (baris berisi soal & opsi), daftar Word <ol>/<li>, opsi vertikal maupun sebaris ("A. ... B. ... C. ..."), hingga format Benar/Salah atau Uraian/Isian.
+2. Pertahankan seluruh tag HTML tabel DATA soal (<table>...</table>), gambar (<img src="__CBT_IMG_...">), bacaan stimulus, daftar pernyataan di badan soal, aksara Arab, serta <sub>/<sup> di dalam pertanyaanHtml! JANGAN ubah placeholder __CBT_IMG_N__.
+3. Jika ada tabel tata letak khusus opsi atau kolom spreadsheet A/B/C/D, ekstrak menjadi array opsi bersih (tanpa huruf awalan A./B./C.) dan hapus opsi tersebut dari pertanyaanHtml.
+4. Jika ada bagian "Kunci Jawaban" di akhir atau kolom Kunci pada tabel, cocokkan ke soal terkait dan JANGAN jadikan bagian Kunci Jawaban sebagai soal terpisah.
+5. Klasifikasikan tipe secara akurat: "PG" (1 jawaban benar), "PG_KOMPLEKS" (>1 jawaban benar), "BENAR_SALAH" (opsi ["Benar", "Salah"]), atau "ESAI".
+6. ${
+            autoSolveMissingKeys
+              ? 'Ekstrak kunci jawaban jika tertulis dan verifikasi posisinya (A=opsi[0], B=opsi[1], dst); JIKA dokumen belum mencantumkan kunci jawaban, analisis soalnya secara cerdas dan isikan kunciJawaban (huruf indeks yang tepat) beserta pembahasan singkat 1 kalimat!'
+              : 'Ekstrak kunci jawaban sesuai teks sumber (pastikan huruf kunci cocok tepat dengan indeks opsi: A=opsi[0], B=opsi[1], dst).'
+          }
+7. Isikan tingkat kesulitan ("Mudah" | "Sedang" | "Sulit") dan pembahasan 1 kalimat ringkas.
 
 Konten Sumber:
 ${chunkText}`;
 
-        try {
-          const { response, modelUsed } = await callGeminiWithResilience(ai, {
-            contents: promptText,
-            systemInstruction,
-            jsonSchema: QUESTION_ARRAY_SCHEMA,
-          });
-          primaryModelUsed = modelUsed;
-          const parsedRaw = extractBalancedJsonArray(response.text ?? '[]');
-          allExtracted.push(...normalizeAiQuestions(parsedRaw, mergedAssets));
-        } catch (chunkErr) {
-          if (allExtracted.length > 0) {
-            partialWarning = `Sebagian dokumen berhenti di bagian ${i + 1}/${chunks.length}: ${formatGeminiErrorMessage(chunkErr).message}`;
-            break;
+          try {
+            const { response, modelUsed } = await callGeminiWithResilience(ai, {
+              contents: promptText,
+              systemInstruction,
+              jsonSchema: QUESTION_ARRAY_SCHEMA,
+              preferMinimalLite: true,
+            });
+            primaryModelUsed = modelUsed;
+            const parsedRaw = extractBalancedJsonArray(response.text ?? '[]');
+            allExtracted.push(...normalizeAiQuestions(parsedRaw, mergedAssets));
+          } catch (chunkErr) {
+            if (allExtracted.length > 0) {
+              partialWarning = `Sebagian dokumen berhenti di bagian ${i + 1}/${chunks.length}: ${formatGeminiErrorMessage(chunkErr).message}`;
+              break;
+            }
+            throw chunkErr;
           }
-          throw chunkErr;
         }
       }
-    }
 
-    // 2. Parse multimodal Vision images (photo/screenshot/scanned PDF pages) in batches of 2 pages
-    if (validImages.length > 0 && !partialWarning) {
-      for (let i = 0; i < validImages.length; i += 2) {
-        if (i > 0 || chunks.length > 0) await sleep(150);
-        const batchImages = validImages.slice(i, i + 2);
-        const imageParts = batchImages.map((img) => ({
-          inlineData: {
-            mimeType: img.mimeType,
-            data: img.data,
-          },
-        }));
-        const visionPrompt = {
-          parts: [
-            ...imageParts,
-            {
-              text: `Baca dan ekstrak seluruh butir soal ujian (Mata Pelajaran: ${mataPelajaran}) dari gambar / halaman dokumen terlampir secara lengkap dan presisi.
+      // 2. Parse multimodal Vision images (photo/screenshot/scanned PDF pages) 1 image per call for speed & reliability
+      if (validImages.length > 0 && !partialWarning) {
+        for (let i = 0; i < validImages.length; i++) {
+          if (i > 0 || chunks.length > 0) await sleep(120);
+          const img = validImages[i];
+          const visionPrompt = {
+            parts: [
+              {
+                inlineData: {
+                  mimeType: img.mimeType,
+                  data: img.data,
+                },
+              },
+              {
+                text: `Baca dan ekstrak seluruh butir soal ujian (Mata Pelajaran: ${mataPelajaran}) dari gambar / foto / halaman scan terlampir secara lengkap dan presisi dalam format apa pun yang terlihat pada gambar.
 Aturan:
 1. Jika terdapat tabel pada gambar, rekonstruksi menjadi tag HTML <table><thead>...<tbody>...</table> yang rapi di dalam pertanyaanHtml.
-2. Pertahankan aksara Arab, rumus, pangkat (<sup>/<sub>), dan tanda baca secara akurat.
-3. Pisahkan setiap nomor soal, bersihkan opsi dari prefix A./B./C. (A=opsi[0], B=opsi[1], dst), deteksi tipe (PG, PG_KOMPLEKS, BENAR_SALAH, ESAI).
+2. Pertahankan aksara Arab, rumus, pecahan, pangkat (<sup>/<sub>), dan tanda baca secara akurat.
+3. Pisahkan setiap butir soal (meski 2 kolom, bertabel, atau tulisan tangan/ketikan), bersihkan opsi dari prefix A./B./C. (A=opsi[0], B=opsi[1], dst), deteksi tipe (PG, PG_KOMPLEKS, BENAR_SALAH, ESAI).
 4. ${
-                autoSolveMissingKeys
-                  ? 'Jika kunci jawaban tidak tertulis pada gambar, kerjakan soal secara teliti untuk mengisi kunciJawaban terbaik (huruf indeks yang tepat) beserta pembahasan 1 kalimat dan tingkat kesulitan.'
-                  : 'Ekstrak kunci jawaban jika tertera pada gambar.'
-              }`,
-            },
-          ],
-        };
+                  autoSolveMissingKeys
+                    ? 'Jika kunci jawaban tidak tertulis pada gambar, kerjakan soal secara teliti untuk mengisi kunciJawaban terbaik (huruf indeks yang tepat) beserta pembahasan 1 kalimat dan tingkat kesulitan.'
+                    : 'Ekstrak kunci jawaban jika tertera pada gambar.'
+                }`,
+              },
+            ],
+          };
 
-        try {
-          const { response, modelUsed } = await callGeminiWithResilience(ai, {
-            contents: visionPrompt,
-            systemInstruction,
-            jsonSchema: QUESTION_ARRAY_SCHEMA,
-          });
-          primaryModelUsed = modelUsed;
-          const parsedRaw = extractBalancedJsonArray(response.text ?? '[]');
-          allExtracted.push(...normalizeAiQuestions(parsedRaw, mergedAssets));
-        } catch (visionErr) {
-          if (allExtracted.length > 0) {
-            partialWarning = `Ekstraksi gambar berhenti di halaman ${i + 1}: ${formatGeminiErrorMessage(visionErr).message}`;
-            break;
+          try {
+            const { response, modelUsed } = await callGeminiWithResilience(ai, {
+              contents: visionPrompt,
+              systemInstruction,
+              jsonSchema: QUESTION_ARRAY_SCHEMA,
+              preferMinimalLite: false,
+            });
+            primaryModelUsed = modelUsed;
+            const parsedRaw = extractBalancedJsonArray(response.text ?? '[]');
+            allExtracted.push(...normalizeAiQuestions(parsedRaw, mergedAssets));
+          } catch (visionErr) {
+            if (allExtracted.length > 0) {
+              partialWarning = `Ekstraksi gambar berhenti di gambar ke-${i + 1}: ${formatGeminiErrorMessage(visionErr).message}`;
+              break;
+            }
+            throw visionErr;
           }
-          throw visionErr;
         }
       }
     }
@@ -1676,6 +1714,21 @@ Pastikan opsi bersih tanpa huruf A./B./C., kunciJawaban akurat, dan sertakan pem
     const { status, message } = formatGeminiErrorMessage(err);
     res.status(status).json({ error: message });
   }
+});
+
+// Always return clean JSON errors (never HTML) for /api/* middleware failures like 413 Payload Too Large
+app.use('/api', (err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (res.headersSent) {
+    next(err);
+    return;
+  }
+  const e = err as { status?: number; statusCode?: number; type?: string; message?: string };
+  const status = e?.status || e?.statusCode || (e?.type === 'entity.too.large' ? 413 : 500);
+  const message =
+    status === 413
+      ? 'Ukuran dokumen atau gambar terlalu besar untuk sekali kirim. Kirim bertahap per bagian.'
+      : e?.message || 'Terjadi kesalahan pada server API.';
+  res.status(status).json({ error: message, code: status === 413 ? 'PAYLOAD_TOO_LARGE' : 'API_ERROR' });
 });
 
 async function startServer() {

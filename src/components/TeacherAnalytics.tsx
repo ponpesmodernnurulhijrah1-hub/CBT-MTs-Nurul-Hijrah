@@ -30,8 +30,7 @@ import {
 } from '../utils/questionAnalysis';
 import {
   chunkArray,
-  formatClientFetchError,
-  safeParseResponseJson,
+  fetchJsonWithRetry,
 } from '../utils/aiQuestionUtils';
 
 interface TeacherAnalyticsProps {
@@ -110,7 +109,7 @@ export const TeacherAnalytics: React.FC<TeacherAnalyticsProps> = ({
       };
     });
 
-    const batches = chunkArray(payloadItems, 8);
+    const batches = chunkArray(payloadItems, 6);
     const mergedMap: Record<string, AiDeepQuestionReview> = { ...aiReviewsMap };
     let analyzedCount = 0;
     let lastModel = 'gemini-3.1-flash-lite';
@@ -121,57 +120,48 @@ export const TeacherAnalytics: React.FC<TeacherAnalyticsProps> = ({
         if (batches.length > 1) {
           setAiAnalyzeProgress(`Menganalisis kelompok ${b + 1} dari ${batches.length}...`);
         }
-        const controller = new AbortController();
-        const timer = window.setTimeout(() => controller.abort(), 50000);
-        try {
-          const res = await fetch('/api/gemini/analyze-questions', {
+        const result = await fetchJsonWithRetry<{
+          reviews?: AiDeepQuestionReview[];
+          modelUsed?: string;
+          warning?: string;
+          error?: string;
+        }>({
+          url: '/api/gemini/analyze-questions',
+          init: {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            signal: controller.signal,
             body: JSON.stringify({
               mataPelajaran: subjectLabel,
               items: batches[b],
             }),
-          });
-          const { data } = await safeParseResponseJson<{
-            reviews?: AiDeepQuestionReview[];
-            modelUsed?: string;
-            warning?: string;
-            error?: string;
-          }>(res);
+          },
+          timeoutMs: 32_000,
+          maxRetries: 2,
+          baseDelayMs: 700,
+        });
 
-          if (!res.ok) {
-            const msg = formatClientFetchError(null, res.status, data?.error);
-            if (analyzedCount > 0) {
-              partialWarn = `Sebagian selesai (${analyzedCount} soal). Kelompok ${b + 1} terhenti: ${msg}`;
-              break;
-            }
-            setAiAnalyzeError(msg);
-            return;
-          }
-
-          if (data?.modelUsed) lastModel = data.modelUsed;
-          if (Array.isArray(data?.reviews)) {
-            for (const rev of data.reviews) {
-              if (rev && rev.id) {
-                mergedMap[rev.id] = rev;
-                analyzedCount += 1;
-              }
-            }
-            setAiReviewsMap({ ...mergedMap });
-          }
-          if (data?.warning) partialWarn = data.warning;
-        } catch (err) {
-          const msg = formatClientFetchError(err);
+        if (!result.ok) {
+          const msg = result.errorMessage || 'Gagal menganalisis soal melalui Smart AI.';
           if (analyzedCount > 0) {
             partialWarn = `Sebagian selesai (${analyzedCount} soal). Kelompok ${b + 1} terhenti: ${msg}`;
             break;
           }
           setAiAnalyzeError(msg);
           return;
-        } finally {
-          window.clearTimeout(timer);
         }
+
+        const data = result.data;
+        if (data?.modelUsed) lastModel = data.modelUsed;
+        if (Array.isArray(data?.reviews)) {
+          for (const rev of data.reviews) {
+            if (rev && rev.id) {
+              mergedMap[rev.id] = rev;
+              analyzedCount += 1;
+            }
+          }
+          setAiReviewsMap({ ...mergedMap });
+        }
+        if (data?.warning) partialWarn = data.warning;
       }
 
       if (analyzedCount > 0) {

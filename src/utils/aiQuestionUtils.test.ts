@@ -11,6 +11,11 @@ import {
   chunkArray,
   safeParseResponseJson,
   formatClientFetchError,
+  fetchJsonWithRetry,
+  hasMeaningfulHtmlContent,
+  sanitizeHtmlImport,
+  stripRtfToPlainText,
+  formatSpreadsheetRowsToHtml,
   normalizeAiQuestions,
 } from './aiQuestionUtils';
 
@@ -156,7 +161,7 @@ test('extractBalancedJsonArray salvages complete objects from truncated JSON arr
   assert.equal(normalized[1].tipe, 'ESAI');
 });
 
-test('normalizeAiQuestions restores images inside options, handles dan/compact keys, and clamps invalid key letters', () => {
+test('normalizeAiQuestions restores images inside options, handles dan/compact keys, and matches option text keys', () => {
   const raw = [
     {
       tipe: 'PG',
@@ -170,14 +175,84 @@ test('normalizeAiQuestions restores images inside options, handles dan/compact k
       opsi: ['2', '4', '5', '9'],
       kunciJawaban: 'A dan C',
     },
+    {
+      tipe: 'PG',
+      pertanyaanHtml: '<p>Ibu kota Indonesia?</p>',
+      opsi: ['Bandung', 'Jakarta', 'Surabaya', 'Medan'],
+      kunciJawaban: ['Jakarta'], // option text instead of letter B
+    },
   ];
 
   const normalized = normalizeAiQuestions(raw, {
     __CBT_IMG_0__: 'data:image/png;base64,GRAPH1',
   });
-  assert.equal(normalized.length, 2);
+  assert.equal(normalized.length, 3);
   assert.ok(normalized[0].opsi[0].includes('data:image/png;base64,GRAPH1'));
   assert.ok(!normalized[0].opsi[0].startsWith('(A)'));
   assert.deepEqual(normalized[0].kunciJawaban, ['A']);
   assert.deepEqual(normalized[1].kunciJawaban, ['A', 'C']);
+  assert.deepEqual(normalized[2].kunciJawaban, ['B']);
+});
+
+test('fetchJsonWithRetry automatically retries transient network/503 errors and succeeds', async () => {
+  let calls = 0;
+  const mockFetch = (async () => {
+    calls += 1;
+    if (calls === 1) {
+      throw new TypeError('Failed to fetch');
+    }
+    if (calls === 2) {
+      return new Response(JSON.stringify({ error: 'Busy' }), {
+        status: 503,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify({ questions: [{ tipe: 'PG' }] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }) as typeof fetch;
+
+  const result = await fetchJsonWithRetry<{ questions: unknown[] }>({
+    url: '/api/gemini/parse-questions',
+    init: { method: 'POST', body: '{}' },
+    maxRetries: 2,
+    baseDelayMs: 5,
+    fetchImpl: mockFetch,
+  });
+
+  assert.equal(calls, 3);
+  assert.equal(result.ok, true);
+  assert.equal(result.status, 200);
+  assert.equal(result.data?.questions.length, 1);
+});
+
+test('universal format helpers sanitize HTML, decode RTF, detect empty editor HTML, and format spreadsheets', () => {
+  assert.equal(hasMeaningfulHtmlContent('<p><br></p>&nbsp;'), false);
+  assert.equal(hasMeaningfulHtmlContent('<p><img src="data:image/png;base64,AAA"></p>'), true);
+
+  const sanitized = sanitizeHtmlImport(
+    '<html><head><style>body{color:red}</style></head><body><script>alert(1)</script><p>1. Soal HTML</p><table><tr><td>A</td></tr></table></body></html>'
+  );
+  assert.ok(!sanitized.includes('<script'));
+  assert.ok(!sanitized.includes('<style'));
+  assert.ok(sanitized.includes('<p>1. Soal HTML</p>'));
+  assert.ok(sanitized.includes('<table><tr><td>A</td></tr></table>'));
+
+  const rtf = '{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Arial;}}1. Hasil 2+2?\\par A. 3\\par B. 4\\par}';
+  const plainFromRtf = stripRtfToPlainText(rtf);
+  assert.ok(plainFromRtf.includes('1. Hasil 2+2?'));
+  assert.ok(plainFromRtf.includes('B. 4'));
+  assert.ok(!plainFromRtf.includes('fonttbl'));
+
+  const tableHtml = formatSpreadsheetRowsToHtml(
+    [
+      ['Pertanyaan', 'Opsi A', 'Opsi B', 'Kunci'],
+      ['1 + 1 = ?', '1', '2', 'B'],
+    ],
+    'Matematika'
+  );
+  assert.ok(tableHtml.includes('Sheet: Matematika'));
+  assert.ok(tableHtml.includes('<table><tbody>'));
+  assert.ok(tableHtml.includes('<td>1 + 1 = ?</td>'));
 });

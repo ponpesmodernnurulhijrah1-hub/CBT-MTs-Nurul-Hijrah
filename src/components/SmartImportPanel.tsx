@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   UploadCloud,
   Sparkles,
@@ -21,10 +21,14 @@ import { getOptionLetter } from '../utils/examLogic';
 import {
   chunkArray,
   chunkHtmlForAi,
-  formatClientFetchError,
+  escapePlainTextForHtml,
+  fetchJsonWithRetry,
+  formatSpreadsheetRowsToHtml,
+  hasMeaningfulHtmlContent,
   restoreDataImages,
-  safeParseResponseJson,
+  sanitizeHtmlImport,
   stripHtmlBoilerplateForAi,
+  stripRtfToPlainText,
   tokenizeDataImages,
 } from '../utils/aiQuestionUtils';
 import { localVerifyAndFixDrafts } from '../utils/questionAnalysis';
@@ -165,6 +169,16 @@ async function extractPdfContentWithVisionFallback(
   const visionImages: AttachedVisionImage[] = [];
   const maxPagesToRender = 16;
 
+  const OPS = (pdfjsLib as { OPS?: Record<string, number> }).OPS || {};
+  const imageOpCodes = new Set<number>(
+    [
+      OPS.paintImageXObject,
+      OPS.paintInlineImageXObject,
+      OPS.paintImageMaskXObject,
+      OPS.paintFormXObjectBegin,
+    ].filter((v): v is number => typeof v === 'number')
+  );
+
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
     const content = await page.getTextContent();
@@ -192,20 +206,32 @@ async function extractPdfContentWithVisionFallback(
     if (currentLine.trim()) pageLines.push(currentLine.trim());
 
     const pagePlainText = pageLines.join(' ').trim();
-    if (pagePlainText) {
-      combinedHtml += pageLines.map((l) => `<p>${l}</p>`).join('\n') + '\n';
+
+    // Detect embedded images / diagrams on this PDF page so mixed text+figure exams also use Vision OCR
+    let hasEmbeddedImages = false;
+    try {
+      const opList = await page.getOperatorList();
+      if (Array.isArray(opList?.fnArray)) {
+        hasEmbeddedImages = opList.fnArray.some((fn: number) => imageOpCodes.has(fn));
+      }
+    } catch {
+      // Ignore operator list errors on protected PDFs
     }
 
-    // Per-page scan check: if this specific page has minimal selectable text, render it to JPEG for AI Vision OCR
-    if (pagePlainText.length < 60 && visionImages.length < maxPagesToRender) {
-      const viewport = page.getViewport({ scale: 1.35 });
+    const shouldRenderForVision =
+      visionImages.length < maxPagesToRender && (pagePlainText.length < 80 || hasEmbeddedImages);
+
+    if (shouldRenderForVision) {
+      const viewport = page.getViewport({ scale: 1.4 });
       const canvas = document.createElement('canvas');
       canvas.width = viewport.width;
       canvas.height = viewport.height;
       const ctx = canvas.getContext('2d');
       if (ctx) {
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
         await page.render({ canvasContext: ctx, viewport, canvas } as never).promise;
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.78);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
         const base64 = dataUrl.split(',')[1] || '';
         if (base64) {
           visionImages.push({
@@ -214,8 +240,14 @@ async function extractPdfContentWithVisionFallback(
             data: base64,
             previewUrl: dataUrl,
           });
+          // Skip duplicating raw text if Vision is already reading the full rendered page cleanly
+          continue;
         }
       }
+    }
+
+    if (pagePlainText) {
+      combinedHtml += pageLines.map((l) => `<p>${escapePlainTextForHtml(l)}</p>`).join('\n') + '\n';
     }
   }
 
@@ -259,16 +291,29 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<ParsedQuestionDraft[]>([]);
 
+  useEffect(() => {
+    if (studioMode === 'extract' && pasteEditorRef.current && rawHtmlContent) {
+      if (pasteEditorRef.current.innerHTML !== rawHtmlContent) {
+        pasteEditorRef.current.innerHTML = rawHtmlContent;
+      }
+    }
+  }, [studioMode, rawHtmlContent]);
+
   const handleFilesInput = async (files: FileList | File[]) => {
     setErrorMsg(null);
     setSuccessMsg(null);
     const list = Array.from(files);
     if (list.length === 0) return;
 
+    const imageExts = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg', 'avif', 'tiff', 'tif', 'heic']);
+    const spreadsheetExts = new Set(['xlsx', 'xls', 'ods', 'csv', 'tsv']);
+
     try {
+      let accumulatedHtml = rawHtmlContent && hasMeaningfulHtmlContent(rawHtmlContent) && list.length > 1 ? rawHtmlContent : '';
+
       for (const file of list) {
-        const ext = file.name.split('.').pop()?.toLowerCase();
-        if (ext === 'png' || ext === 'jpg' || ext === 'jpeg' || ext === 'webp') {
+        const ext = file.name.split('.').pop()?.toLowerCase() || '';
+        if (file.type.startsWith('image/') || imageExts.has(ext)) {
           const img = await fileToBase64Image(file);
           setAttachedImages((prev) => [...prev, img]);
           setFileName((prev) => (prev ? `${prev}, ${file.name}` : file.name));
@@ -285,30 +330,58 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
               ),
             }
           );
-          setRawHtmlContent(result.value);
-          if (pasteEditorRef.current) pasteEditorRef.current.innerHTML = result.value;
+          accumulatedHtml = accumulatedHtml ? `${accumulatedHtml}\n${result.value}` : result.value;
         } else if (ext === 'pdf') {
           setFileName(file.name);
           const buffer = await file.arrayBuffer();
           const { html, visionImages } = await extractPdfContentWithVisionFallback(buffer, file.name);
-          setRawHtmlContent(html);
-          if (pasteEditorRef.current) pasteEditorRef.current.innerHTML = html;
+          if (html.trim()) {
+            accumulatedHtml = accumulatedHtml ? `${accumulatedHtml}\n${html}` : html;
+          }
           if (visionImages.length > 0) {
             setAttachedImages((prev) => [...prev, ...visionImages]);
             setSuccessMsg(
-              `PDF terdeteksi berisi ${visionImages.length} halaman scan/gambar untuk AI Vision OCR. Klik "Ekstrak dengan Smart AI (Vision & Auto-Kunci)".`
+              `PDF siap diekstrak (${visionImages.length} halaman visual/scan${html.trim() ? ' + teks' : ''}). Klik "Ekstrak dengan Smart AI (Vision & Auto-Kunci)".`
             );
           }
+        } else if (spreadsheetExts.has(ext)) {
+          setFileName(file.name);
+          const [buffer, XLSX] = await Promise.all([file.arrayBuffer(), import('xlsx')]);
+          const wb = XLSX.read(buffer, { type: 'array' });
+          const sheetBlocks = wb.SheetNames.map((name) => {
+            const rows = XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[name], { header: 1 });
+            return formatSpreadsheetRowsToHtml(rows, wb.SheetNames.length > 1 ? name : undefined);
+          }).filter(Boolean);
+          const joined = sheetBlocks.join('\n');
+          accumulatedHtml = accumulatedHtml ? `${accumulatedHtml}\n${joined}` : joined;
+        } else if (ext === 'html' || ext === 'htm') {
+          setFileName(file.name);
+          const cleaned = sanitizeHtmlImport(await file.text());
+          accumulatedHtml = accumulatedHtml ? `${accumulatedHtml}\n${cleaned}` : cleaned;
+        } else if (ext === 'rtf') {
+          setFileName(file.name);
+          const plain = stripRtfToPlainText(await file.text());
+          const htmlText = plain
+            .split(/\r?\n/)
+            .map((l) => (l.trim() ? `<p>${escapePlainTextForHtml(l)}</p>` : ''))
+            .filter(Boolean)
+            .join('\n');
+          accumulatedHtml = accumulatedHtml ? `${accumulatedHtml}\n${htmlText}` : htmlText;
         } else {
           setFileName(file.name);
           const text = await file.text();
           const htmlText = text
             .split(/\r?\n/)
-            .map((l) => `<p>${l}</p>`)
+            .map((l) => (l.trim() ? `<p>${escapePlainTextForHtml(l)}</p>` : ''))
+            .filter(Boolean)
             .join('\n');
-          setRawHtmlContent(htmlText);
-          if (pasteEditorRef.current) pasteEditorRef.current.innerHTML = htmlText;
+          accumulatedHtml = accumulatedHtml ? `${accumulatedHtml}\n${htmlText}` : htmlText;
         }
+      }
+
+      if (accumulatedHtml) {
+        setRawHtmlContent(accumulatedHtml);
+        if (pasteEditorRef.current) pasteEditorRef.current.innerHTML = accumulatedHtml;
       }
     } catch (err) {
       setErrorMsg(
@@ -324,7 +397,8 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
       .map((item) => item.getAsFile())
       .filter((f): f is File => Boolean(f));
 
-    if (imageFiles.length > 0 && !e.clipboardData.getData('text/html')) {
+    const plainClip = e.clipboardData?.getData('text/plain')?.trim() || '';
+    if (imageFiles.length > 0 && plainClip.length < 20) {
       e.preventDefault();
       for (const f of imageFiles) {
         const img = await fileToBase64Image(f);
@@ -354,114 +428,119 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
   };
 
   const handleAIParse = async () => {
-    const content = pasteEditorRef.current?.innerHTML || rawHtmlContent;
-    if (!content.trim() && attachedImages.length === 0) {
-      setErrorMsg('Tempel soal dari Word, unggah dokumen (.docx/.pdf), atau lampirkan foto soal terlebih dahulu.');
+    const content = pasteEditorRef.current?.innerHTML ?? rawHtmlContent;
+    const hasTextOrHtml = hasMeaningfulHtmlContent(content);
+    if (!hasTextOrHtml && attachedImages.length === 0) {
+      setErrorMsg('Tempel soal (format apa pun), unggah dokumen (.docx/.pdf/.xlsx/.txt/.html), atau lampirkan foto soal terlebih dahulu.');
       return;
     }
     setIsParsing(true);
-    setAiProgressText(null);
+    setAiProgressText('Menyiapkan dokumen untuk Smart AI (Gratis)...');
     setErrorMsg(null);
     setSuccessMsg(null);
 
     try {
       // Tokenize embedded base64 images & strip Word XML bloat BEFORE chunking so payloads stay lightweight
-      const { cleanedHtml, assets: clientAssets } = content.trim()
+      const { cleanedHtml, assets: clientAssets } = hasTextOrHtml
         ? tokenizeDataImages(content)
         : { cleanedHtml: '', assets: {} as Record<string, string> };
-      const compactHtml = cleanedHtml.trim() ? stripHtmlBoilerplateForAi(cleanedHtml) : '';
-      const textChunks = compactHtml ? chunkHtmlForAi(compactHtml, 9500) : [];
-      const imageBatches = chunkArray(attachedImages, 2);
-      const requests: Array<{ content: string; images: Array<{ mimeType: string; data: string }> }> = [];
+      const compactHtml = hasTextOrHtml ? stripHtmlBoilerplateForAi(cleanedHtml) : '';
+      // Keep text chunks compact (~3,800 chars) and Vision requests 1 image per call so every API turn finishes rapidly (<10s) without proxy timeouts
+      const textChunks = compactHtml ? chunkHtmlForAi(compactHtml, 3800) : [];
+      const queue: Array<{ content: string; images: Array<{ mimeType: string; data: string }> }> = [];
 
       for (const tc of textChunks) {
-        requests.push({ content: tc, images: [] });
+        queue.push({ content: tc, images: [] });
       }
-      for (const ib of imageBatches) {
-        requests.push({
+      for (const img of attachedImages) {
+        queue.push({
           content: '',
-          images: ib.map((img) => ({ mimeType: img.mimeType, data: img.data })),
+          images: [{ mimeType: img.mimeType, data: img.data }],
         });
       }
-      if (requests.length === 0) {
-        requests.push({ content: compactHtml, images: [] });
+      if (queue.length === 0) {
+        queue.push({ content: compactHtml, images: [] });
       }
 
       const collected: ParsedQuestionDraft[] = [];
       let partialWarn: string | null = null;
       let lastModel = 'gemini-3.1-flash-lite';
+      let stepIndex = 0;
 
-      for (let i = 0; i < requests.length; i++) {
-        if (requests.length > 1) {
-          setAiProgressText(`Memproses bagian ${i + 1} dari ${requests.length}...`);
-        }
-        const controller = new AbortController();
-        const timer = window.setTimeout(() => controller.abort(), 52000);
-        try {
-          const res = await fetch('/api/gemini/parse-questions', {
+      while (stepIndex < queue.length) {
+        const reqItem = queue[stepIndex];
+        setAiProgressText(
+          queue.length > 1
+            ? `Smart AI mengekstrak bagian ${stepIndex + 1} dari ${queue.length}...`
+            : 'Smart AI sedang mengekstrak & menyusun kunci jawaban...'
+        );
+
+        const result = await fetchJsonWithRetry<{
+          questions?: ParsedQuestionDraft[];
+          modelUsed?: string;
+          error?: string;
+          warning?: string;
+        }>({
+          url: '/api/gemini/parse-questions',
+          init: {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            signal: controller.signal,
             body: JSON.stringify({
-              content: requests[i].content,
-              images: requests[i].images,
+              content: reqItem.content,
+              images: reqItem.images,
               mataPelajaran: activeSubject,
               autoSolveMissingKeys,
             }),
-          });
-          const { data } = await safeParseResponseJson<{
-            questions?: ParsedQuestionDraft[];
-            modelUsed?: string;
-            error?: string;
-            warning?: string;
-          }>(res);
+          },
+          timeoutMs: 32_000,
+          maxRetries: 2,
+          baseDelayMs: 700,
+          onRetry: (attempt) => {
+            setAiProgressText(
+              `Menyambung ulang bagian ${stepIndex + 1}/${queue.length} (percobaan ${attempt + 1})...`
+            );
+          },
+        });
 
-          if (!res.ok) {
-            const msg = formatClientFetchError(null, res.status, data?.error);
-            if (collected.length > 0) {
-              partialWarn = `Sebagian selesai (${collected.length} soal). Bagian ${i + 1} terhenti: ${msg}`;
-              break;
-            }
-            const localFallback = tryRunLocalSmartParse(content);
-            if (localFallback.length > 0) {
-              setDrafts(localFallback);
-              setErrorMsg(
-                `${msg} · Sebagai gantinya, Deteksi Cerdas Lokal (Gratis Tanpa Limit) mengekstrak ${localFallback.length} soal dari teks/Word Anda.`
-              );
-            } else {
-              setErrorMsg(msg);
-            }
-            return;
+        // Adaptive self-healing: if a large text chunk still timed out or was too large, split it in half and retry cleanly
+        if (
+          !result.ok &&
+          (result.wasTimeoutOrNetwork || result.wasPayloadTooLarge) &&
+          reqItem.images.length === 0 &&
+          reqItem.content.length > 1400
+        ) {
+          const splitHalves = chunkHtmlForAi(reqItem.content, Math.floor(reqItem.content.length / 2));
+          if (splitHalves.length > 1) {
+            queue.splice(
+              stepIndex,
+              1,
+              ...splitHalves.map((part) => ({ content: part, images: [] }))
+            );
+            continue;
           }
+        }
 
-          if (data?.modelUsed) lastModel = data.modelUsed;
-          if (data?.questions && data.questions.length > 0) {
-            const restored = restoreAssetsOnDrafts(data.questions, clientAssets);
-            collected.push(...restored);
-            setDrafts([...collected]);
-          }
-          if (data?.warning) {
-            partialWarn = data.warning;
-          }
-        } catch (chunkErr) {
-          const msg = formatClientFetchError(chunkErr);
+        if (!result.ok) {
+          const msg = result.errorMessage || 'Gagal mengekstrak bagian soal melalui Smart AI.';
           if (collected.length > 0) {
-            partialWarn = `Sebagian selesai (${collected.length} soal). Bagian ${i + 1} terhenti: ${msg}`;
+            partialWarn = `Sebagian selesai (${collected.length} soal). Bagian ${stepIndex + 1} terhenti: ${msg}`;
             break;
           }
-          const localFallback = tryRunLocalSmartParse(content);
-          if (localFallback.length > 0) {
-            setDrafts(localFallback);
-            setErrorMsg(
-              `${msg} · Sebagai gantinya, Deteksi Cerdas Lokal (Gratis Tanpa Limit) mengekstrak ${localFallback.length} soal dari teks/Word Anda.`
-            );
-          } else {
-            setErrorMsg(msg);
-          }
+          setErrorMsg(msg);
           return;
-        } finally {
-          window.clearTimeout(timer);
         }
+
+        const data = result.data;
+        if (data?.modelUsed) lastModel = data.modelUsed;
+        if (data?.questions && data.questions.length > 0) {
+          const restored = restoreAssetsOnDrafts(data.questions, clientAssets);
+          collected.push(...restored);
+          setDrafts([...collected]);
+        }
+        if (data?.warning) {
+          partialWarn = data.warning;
+        }
+        stepIndex += 1;
       }
 
       if (collected.length > 0) {
@@ -473,15 +552,7 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
           setErrorMsg(partialWarn);
         }
       } else {
-        const localFallback = tryRunLocalSmartParse(content);
-        if (localFallback.length > 0) {
-          setDrafts(localFallback);
-          setSuccessMsg(
-            `Deteksi Cerdas Lokal (Gratis Tanpa Limit) berhasil mengekstrak ${localFallback.length} butir soal dari dokumen Anda.`
-          );
-        } else {
-          setErrorMsg('AI tidak menemukan butir soal pada konten atau gambar tersebut.');
-        }
+        setErrorMsg('Smart AI tidak menemukan butir soal yang terbaca pada dokumen atau gambar tersebut. Pastikan teks/gambar cukup jelas.');
       }
     } finally {
       setIsParsing(false);
@@ -500,44 +571,42 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
     setErrorMsg(null);
     setSuccessMsg(null);
 
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), 52000);
-
     try {
-      const res = await fetch('/api/gemini/generate-questions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        signal: controller.signal,
-        body: JSON.stringify({
-          topik: genTopik,
-          mataPelajaran: activeSubject,
-          kelas: genKelas,
-          jumlah: genJumlah,
-          tipe: genTipe,
-          kesulitan: genKesulitan,
-          sertakanTabel: genSertakanTabel,
-        }),
-      });
-      const { data } = await safeParseResponseJson<{
+      const result = await fetchJsonWithRetry<{
         questions?: ParsedQuestionDraft[];
         modelUsed?: string;
         error?: string;
-      }>(res);
+      }>({
+        url: '/api/gemini/generate-questions',
+        init: {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            topik: genTopik,
+            mataPelajaran: activeSubject,
+            kelas: genKelas,
+            jumlah: genJumlah,
+            tipe: genTipe,
+            kesulitan: genKesulitan,
+            sertakanTabel: genSertakanTabel,
+          }),
+        },
+        timeoutMs: 36_000,
+        maxRetries: 2,
+        baseDelayMs: 700,
+      });
 
-      if (!res.ok) {
-        setErrorMsg(formatClientFetchError(null, res.status, data?.error));
-      } else if (data?.questions && data.questions.length > 0) {
-        setDrafts((prev) => [...prev, ...data.questions!]);
+      if (!result.ok) {
+        setErrorMsg(result.errorMessage || 'Gagal membuat soal dengan Smart AI.');
+      } else if (result.data?.questions && result.data.questions.length > 0) {
+        setDrafts((prev) => [...prev, ...result.data!.questions!]);
         setSuccessMsg(
-          `Smart AI (${data.modelUsed || 'gemini-3.1-flash-lite'} · Gratis) berhasil membuat ${data.questions.length} soal baru untuk ${activeSubject} Kelas ${genKelas}.`
+          `Smart AI (${result.data.modelUsed || 'gemini-3.1-flash-lite'} · Gratis) berhasil membuat ${result.data.questions.length} soal baru untuk ${activeSubject} Kelas ${genKelas}.`
         );
       } else {
         setErrorMsg('AI tidak mengembalikan soal. Coba deskripsikan topik lebih spesifik.');
       }
-    } catch (err) {
-      setErrorMsg(formatClientFetchError(err));
     } finally {
-      window.clearTimeout(timer);
       setIsParsing(false);
       setAiProgressText(null);
     }
@@ -550,7 +619,7 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
     setErrorMsg(null);
     setSuccessMsg(null);
 
-    const batches = chunkArray(drafts, 8);
+    const batches = chunkArray(drafts, 6);
     const enhancedCollected: ParsedQuestionDraft[] = [];
     let partialWarn: string | null = null;
     let lastModel = 'gemini-3.1-flash-lite';
@@ -573,45 +642,29 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
           return { ...q, pertanyaanHtml: strippedHtml };
         });
 
-        const controller = new AbortController();
-        const timer = window.setTimeout(() => controller.abort(), 52000);
-        try {
-          const res = await fetch('/api/gemini/enhance-questions', {
+        const result = await fetchJsonWithRetry<{
+          questions?: ParsedQuestionDraft[];
+          modelUsed?: string;
+          error?: string;
+          warning?: string;
+        }>({
+          url: '/api/gemini/enhance-questions',
+          init: {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            signal: controller.signal,
             body: JSON.stringify({
               questions: compactBatch,
               action,
               mataPelajaran: activeSubject,
             }),
-          });
-          const { data } = await safeParseResponseJson<{
-            questions?: ParsedQuestionDraft[];
-            modelUsed?: string;
-            error?: string;
-            warning?: string;
-          }>(res);
+          },
+          timeoutMs: 32_000,
+          maxRetries: 2,
+          baseDelayMs: 700,
+        });
 
-          if (!res.ok) {
-            const msg = formatClientFetchError(null, res.status, data?.error);
-            if (enhancedCollected.length > 0) {
-              for (let r = b; r < batches.length; r++) enhancedCollected.push(...batches[r]);
-              partialWarn = `Sebagian soal selesai disempurnakan. Kelompok ${b + 1} terhenti: ${msg}`;
-              break;
-            }
-            setErrorMsg(msg);
-            return;
-          }
-          if (data?.modelUsed) lastModel = data.modelUsed;
-          if (data?.questions && data.questions.length > 0) {
-            enhancedCollected.push(...restoreAssetsOnDrafts(data.questions, batchAssets));
-          } else {
-            enhancedCollected.push(...batches[b]);
-          }
-          if (data?.warning) partialWarn = data.warning;
-        } catch (err) {
-          const msg = formatClientFetchError(err);
+        if (!result.ok) {
+          const msg = result.errorMessage || 'Gagal menyempurnakan soal melalui Smart AI.';
           if (enhancedCollected.length > 0) {
             for (let r = b; r < batches.length; r++) enhancedCollected.push(...batches[r]);
             partialWarn = `Sebagian soal selesai disempurnakan. Kelompok ${b + 1} terhenti: ${msg}`;
@@ -619,9 +672,15 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
           }
           setErrorMsg(msg);
           return;
-        } finally {
-          window.clearTimeout(timer);
         }
+        const data = result.data;
+        if (data?.modelUsed) lastModel = data.modelUsed;
+        if (data?.questions && data.questions.length > 0) {
+          enhancedCollected.push(...restoreAssetsOnDrafts(data.questions, batchAssets));
+        } else {
+          enhancedCollected.push(...batches[b]);
+        }
+        if (data?.warning) partialWarn = data.warning;
       }
 
       if (enhancedCollected.length > 0) {
@@ -809,7 +868,7 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
                 Klik untuk pilih file atau tarik dokumen / foto soal ke sini
               </p>
               <p className="mt-0.5 text-xs text-slate-500">
-                Mendukung <strong>.docx</strong> (Word + tabel &amp; gambar), <strong>.pdf</strong> (teks &amp; hasil scan), <strong>.png/.jpg/.webp</strong> (foto/screenshot soal), .txt, .csv
+                Mendukung format apa pun: <strong>.docx</strong> (Word), <strong>.pdf</strong> (teks/scan), <strong>.xlsx/.xls/.csv</strong>, <strong>.html/.rtf/.md/.txt/.json</strong>, dan <strong>foto/screenshot</strong>
               </p>
               {fileName && (
                 <span className="mt-2.5 inline-flex items-center gap-1.5 rounded-xl bg-white/80 px-3 py-1 text-xs font-medium text-emerald-800 border border-emerald-300/60 max-w-full">
@@ -820,7 +879,7 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
               <input
                 type="file"
                 multiple
-                accept=".docx,.pdf,.txt,.csv,.png,.jpg,.jpeg,.webp"
+                accept=".docx,.pdf,.xlsx,.xls,.ods,.csv,.tsv,.txt,.md,.html,.htm,.rtf,.json,.xml,.png,.jpg,.jpeg,.webp,.gif,.bmp,.svg,.avif,image/*"
                 className="hidden"
                 onChange={(e) => {
                   const picked = e.target.files ? Array.from(e.target.files) : [];
@@ -1051,17 +1110,29 @@ export const SmartImportPanel: React.FC<SmartImportPanelProps> = ({
         {errorMsg && (
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-800">
             <span>{errorMsg}</span>
-            {studioMode === 'extract' &&
-              Boolean((pasteEditorRef.current?.innerHTML || rawHtmlContent).trim()) && (
+            {studioMode === 'extract' && (
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   type="button"
-                  onClick={handleLocalParse}
-                  className="btn-press inline-flex items-center gap-1.5 rounded-lg border border-red-300 bg-white px-3 py-1.5 font-semibold text-red-700 hover:bg-red-100/60"
+                  disabled={isParsing}
+                  onClick={handleAIParse}
+                  className="btn-press inline-flex items-center gap-1.5 rounded-lg border border-emerald-300 bg-emerald-600 px-3 py-1.5 font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
                 >
-                  <Wand2 className="h-3.5 w-3.5" />
-                  <span>Jalankan Deteksi Cerdas Lokal (Gratis)</span>
+                  <Sparkles className="h-3.5 w-3.5" />
+                  <span>Coba Lagi Smart AI (Gratis)</span>
                 </button>
-              )}
+                {hasMeaningfulHtmlContent(pasteEditorRef.current?.innerHTML ?? rawHtmlContent) && (
+                  <button
+                    type="button"
+                    onClick={handleLocalParse}
+                    className="btn-press inline-flex items-center gap-1.5 rounded-lg border border-red-300 bg-white px-3 py-1.5 font-semibold text-red-700 hover:bg-red-100/60"
+                  >
+                    <Wand2 className="h-3.5 w-3.5" />
+                    <span>Gunakan Parser Lokal</span>
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         )}
         {successMsg && (

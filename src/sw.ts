@@ -22,12 +22,15 @@ cleanupOutdatedCaches();
 precacheAndRoute(self.__WB_MANIFEST || []);
 
 // Never cache dynamic backend API or live version manifests (/version.json, /api/*)
-registerRoute(
-  ({ url }) =>
-    url.origin === self.location.origin &&
-    (url.pathname.startsWith('/api/') || url.pathname === '/version.json'),
-  new NetworkOnly()
-);
+for (const method of ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const) {
+  registerRoute(
+    ({ url }) =>
+      url.origin === self.location.origin &&
+      (url.pathname.startsWith('/api/') || url.pathname === '/version.json'),
+    new NetworkOnly(),
+    method
+  );
+}
 
 // Always check network first for manifest.webmanifest while keeping offline fallback for installability checks
 registerRoute(
